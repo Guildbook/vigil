@@ -59,6 +59,34 @@ export async function startUpdates(onChange: (state: UpdateState) => void, downl
   const check = () => void autoUpdater.checkForUpdates().catch(() => {});
   setTimeout(check, FIRST_CHECK_MS);
   setInterval(check, CHECK_EVERY_MS);
+
+  manualCheck = async () => {
+    if (ready && offered) return { kind: "ready", version: offered };
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      if (!result?.isUpdateAvailable) return { kind: "latest", version: app.getVersion() };
+      const version = result.updateInfo.version;
+      return install ? { kind: "downloading", version } : { kind: "available", version, downloadUrl };
+    } catch (err) {
+      return { kind: "error", message: err instanceof Error ? err.message : String(err) };
+    }
+  };
+}
+
+export type ManualCheck =
+  | { kind: "unsupported" }
+  | { kind: "latest"; version: string }
+  | { kind: "downloading"; version: string }
+  | { kind: "ready"; version: string }
+  | { kind: "available"; version: string; downloadUrl: string }
+  | { kind: "error"; message: string };
+
+let manualCheck: (() => Promise<ManualCheck>) | null = null;
+
+/** "Check for updates" from the tray. Development runs never check; release builds report what they found. */
+export function checkForUpdatesNow(): Promise<ManualCheck> {
+  if (!app.isPackaged) return Promise.resolve({ kind: "unsupported" });
+  return manualCheck ? manualCheck() : Promise.resolve({ kind: "error", message: "Vigil is still starting its update checks. Try again in a moment." });
 }
 
 export function installUpdate() {

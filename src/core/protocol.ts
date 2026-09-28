@@ -1,5 +1,7 @@
+import type { Faction, WowClass } from "@/lib/game";
 import type { Callout } from "@/lib/vigil/live";
 import type { EngineSnapshot } from "./engine";
+import type { GroupFightView } from "./group";
 
 /** Types shared by the main process and the window, across the preload bridge. */
 
@@ -17,6 +19,10 @@ export interface Settings {
   mode: "full" | "compact";
   /** "auto" picks the rotation model from the spells cast, as the upload page does. */
   modelId: string;
+  /** Closing the window leaves Vigil in the tray (menu bar on macOS), still following the log and uploading. */
+  keepInTray: boolean;
+  /** Launch at login (macOS and Windows only; see AppState.canOpenAtLogin). */
+  openAtLogin: boolean;
 }
 
 export type UploadState =
@@ -39,6 +45,17 @@ export interface FightSummary {
   gcdUsage: number;
   callouts: string[];
   upload: UploadState;
+  encounterId: number | null;
+  /** The group fight (meters, deaths, boss abilities) recorded alongside, when one lines up. */
+  groupId: string | null;
+}
+
+/** The recording player, for the header. Class comes from the site, the rotation model or the spells cast. */
+export interface Identity {
+  name: string;
+  level: number | null;
+  wowClass: WowClass | null;
+  faction: Faction | null;
 }
 
 export interface PairingState {
@@ -81,7 +98,14 @@ export interface AppState {
   logsOptions: LogsOption[];
   callouts: Callout[];
   fights: FightSummary[];
+  /** Finished group fights, newest first. */
+  groupFights: GroupFightView[];
+  identity: Identity | null;
   settings: Settings;
+  /** Paused from the tray for this session; queued fights wait and upload on resume. */
+  uploadsPaused: boolean;
+  /** Whether "Start Vigil when I log in" applies: packaged macOS and Windows builds. */
+  canOpenAtLogin: boolean;
   pairing: PairingState;
   addon: { bundled: string | null; targets: AddonTarget[] };
   models: { id: string; label: string }[];

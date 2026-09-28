@@ -34,8 +34,19 @@ export class Uploader {
   private readonly queue: Job[] = [];
   private busy = false;
   private waiting = false;
+  private paused = false;
 
   constructor(private readonly deps: UploaderDeps) {}
+
+  /** While paused, fights queue up but nothing is sent; an upload already in flight finishes. */
+  setPaused(paused: boolean) {
+    this.paused = paused;
+    if (!paused) void this.pump();
+  }
+
+  get isPaused(): boolean {
+    return this.paused;
+  }
 
   enqueue(id: string, report: FightReport) {
     this.queue.push({ id, report, attempts: 0 });
@@ -56,7 +67,7 @@ export class Uploader {
   }
 
   private async pump() {
-    if (this.busy || this.waiting) return;
+    if (this.busy || this.waiting || this.paused) return;
     const job = this.queue[0];
     if (!job) return;
     const target = this.deps.target();

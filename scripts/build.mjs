@@ -43,6 +43,7 @@ function copyStatic() {
   const out = path.join(dist, "renderer");
   mkdirSync(path.join(out, "fonts"), { recursive: true });
   for (const f of ["index.html", "styles.css"]) cpSync(path.join(pkg, "src", "renderer", f), path.join(out, f));
+  cpSync(path.join(pkg, "src", "renderer", "icons"), path.join(out, "icons"), { recursive: true });
   const fonts = [
     ["cinzel", "cinzel-latin-400-normal.woff2"],
     ["cinzel", "cinzel-latin-700-normal.woff2"],

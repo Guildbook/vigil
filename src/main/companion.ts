@@ -2,20 +2,23 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
-import type { WowClass } from "@/lib/game";
+import type { Faction, WowClass } from "@/lib/game";
 import type { Callout, CompletedFight } from "@/lib/vigil/live";
 import type { FightReport } from "@/lib/vigil/report";
 import { ROTATION_MODELS } from "@/lib/vigil/rotations";
 import { installAddon, installedVersion, pickAddonSource, readTocVersion, ADDON_TOC } from "../core/addon";
 import { CompanionEngine, type EngineSnapshot } from "../core/engine";
-import type { AppState, FightSummary, PairingState, Settings, UpdateState, UploadState } from "../core/protocol";
+import { factionFromClasses, type GroupFightView } from "../core/group";
+import { SpellIcons } from "../core/media";
+import type { AppState, FightSummary, Identity, PairingState, Settings, UpdateState, UploadState } from "../core/protocol";
 import { skipReason, Uploader } from "../core/uploader";
 import { discoverLogsCandidates, resolveLogsDir, wowRootCandidates, type LogsCandidate } from "../core/wow-paths";
 import { trustedSiteOrigin, type TrustConfig } from "../core/origins";
-import { loadPairing, loadSettings, savePairing, saveSettings, TokenStore, trustConfig, type PairingRecord } from "./store";
+import { loadPairing, loadSettings, loginItemsSupported, savePairing, saveSettings, TokenStore, trustConfig, type PairingRecord } from "./store";
 
 const MAX_FIGHTS = 50;
 const MAX_CALLOUTS = 40;
+const MAX_GROUP_FIGHTS = 15;
 
 interface Profile {
   /** The guild's canonical site, which changes when the guild verifies a custom domain. */
@@ -44,6 +47,8 @@ export class Companion {
   private candidates: LogsCandidate[] = [];
   private callouts: Callout[] = [];
   private fights: FightSummary[] = [];
+  private groupFights: GroupFightView[] = [];
+  private readonly icons = new SpellIcons();
   private readonly reports = new Map<string, FightReport>();
   private readonly uploader: Uploader;
   private timer: NodeJS.Timeout | null = null;
@@ -106,6 +111,7 @@ export class Companion {
         logsDir: dir,
         startAt: "end",
         session: this.sessionOptions(),
+        group: { icons: this.icons, classFor: (name) => this.knownClass(name), onFinished: (g) => this.onGroupFight(g) },
         onFight: (f) => this.onFight(f),
         onCallout: (c) => {
           this.callouts.unshift(c);
@@ -116,12 +122,44 @@ export class Companion {
     }
   }
 
+  private knownClass(name: string): WowClass | null {
+    return this.profile?.characters.find((c) => c.name.toLowerCase() === name.toLowerCase())?.wowClass ?? null;
+  }
+
   private sessionOptions() {
     return {
       modelId: this.settings.modelId === "auto" ? null : this.settings.modelId,
-      classFor: (name: string) =>
-        this.profile?.characters.find((c) => c.name.toLowerCase() === name.toLowerCase())?.wowClass ?? null,
+      classFor: (name: string) => this.knownClass(name),
     };
+  }
+
+  private onGroupFight(fight: GroupFightView) {
+    this.groupFights.unshift(fight);
+    this.groupFights.length = Math.min(this.groupFights.length, MAX_GROUP_FIGHTS);
+    for (const f of this.fights) if (!f.groupId) f.groupId = this.groupFor(f);
+    this.push();
+  }
+
+  /** The group fight recorded alongside an analysed fight: the same encounter, or a pull that began within 10 s. */
+  private groupFor(f: FightSummary): string | null {
+    const start = Date.parse(f.startedAt);
+    const taken = new Set(this.fights.map((x) => x.groupId).filter(Boolean));
+    const match = this.groupFights.find((g) => {
+      if (taken.has(g.id)) return false;
+      if (f.encounterId !== null) return g.encounter?.id === f.encounterId && Math.abs(g.startT - start) < 30_000;
+      return g.encounter === null && Math.abs(g.startT - start) <= 10_000;
+    });
+    return match?.id ?? null;
+  }
+
+  private identity(): Identity | null {
+    const player = this.snapshot?.player;
+    if (!player) return null;
+    const model = this.snapshot?.model ? ROTATION_MODELS.find((m) => m.id === this.snapshot!.model!.id) : null;
+    const wowClass = this.knownClass(player.name) ?? model?.wowClass ?? this.engine?.classOf(player.guid) ?? null;
+    const group = this.snapshot?.group ?? this.groupFights[0] ?? null;
+    const faction: Faction | null = factionFromClasses([wowClass, ...(group?.players.map((p) => p.wowClass) ?? [])]);
+    return { name: player.name, level: player.level, wowClass, faction };
   }
 
   private onFight({ report, callouts }: CompletedFight) {
@@ -140,7 +178,10 @@ export class Companion {
       gcdUsage: report.activity.gcdUsage,
       callouts: callouts.slice(0, 3).map((c) => c.text),
       upload: reason ? { state: "skipped", reason } : { state: "queued" },
+      encounterId: report.fight.encounter?.id ?? null,
+      groupId: null,
     };
+    summary.groupId = this.groupFor(summary);
     this.fights.unshift(summary);
     this.reports.set(id, report);
     for (const old of this.fights.splice(MAX_FIGHTS)) this.reports.delete(old.id);
@@ -157,6 +198,11 @@ export class Companion {
   retryUpload(id: string) {
     const report = this.reports.get(id);
     if (report) this.uploader.enqueue(id, report);
+  }
+
+  setUploadsPaused(paused: boolean) {
+    this.uploader.setPaused(paused);
+    this.push();
   }
 
   updateSettings(partial: Partial<Settings>): Settings {
@@ -286,7 +332,11 @@ export class Companion {
         .map((c) => ({ label: `${c.label} (${c.flavor})`, logsDir: c.logsDir, latestLog: c.latestLog?.name ?? null, latestAt: c.latestLog?.mtimeMs ?? null })),
       callouts: this.callouts,
       fights: this.fights,
+      groupFights: this.groupFights,
+      identity: this.identity(),
       settings: this.settings,
+      uploadsPaused: this.uploader.isPaused,
+      canOpenAtLogin: loginItemsSupported(),
       pairing: this.pairingState(),
       addon: {
         bundled: source ? (readTocVersion(path.join(source.path, ADDON_TOC)) ?? source.version) : null,

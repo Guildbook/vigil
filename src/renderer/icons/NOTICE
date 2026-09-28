@@ -1,0 +1,9 @@
+The class icons in classes/ and the faction icons in factions/ are World of Warcraft artwork by Blizzard Entertainment, Inc.
+They were downloaded once from Blizzard's render CDN (render.worldofwarcraft.com/us/icons/56/: classicon_<class>.jpg,
+ui_allianceicon.jpg, ui_hordeicon.jpg). They are the same images the Guildbook site ships in public/icons/.
+
+They are not covered by Vigil's license (AGPL-3.0). World of Warcraft and Blizzard Entertainment are trademarks or registered
+trademarks of Blizzard Entertainment, Inc. Used in this free, non-commercial fan application; not affiliated with or endorsed
+by Blizzard.
+
+fallback.svg is original Vigil artwork, under Vigil's license.

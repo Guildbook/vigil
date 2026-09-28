@@ -27,6 +27,8 @@ export const DEFAULT_SETTINGS = (): Settings => ({
   alwaysOnTop: false,
   mode: "full",
   modelId: "auto",
+  keepInTray: true,
+  openAtLogin: false,
 });
 
 const file = (name: string) => path.join(app.getPath("userData"), name);
@@ -49,11 +51,35 @@ export function loadSettings(): Settings {
   const saved = readJson<Settings>("settings.json") ?? {};
   // Only known keys: older versions also stored the site address here.
   const known = Object.fromEntries(Object.entries(saved).filter(([k]) => k in defaults));
-  return { ...defaults, ...known };
+  const settings = { ...defaults, ...known };
+  // The system owns the login item (the player can remove it in System Settings or Task Manager).
+  if (loginItemsSupported()) settings.openAtLogin = app.getLoginItemSettings().openAtLogin;
+  return settings;
 }
 
 export function saveSettings(settings: Settings) {
   writeJson("settings.json", settings);
+}
+
+/**
+ * Login items need a stable app path: packaged macOS and Windows builds. A development run would register the
+ * bare Electron binary, and an AppImage moves whenever it is updated.
+ */
+export function loginItemsSupported(): boolean {
+  return app.isPackaged && (process.platform === "darwin" || process.platform === "win32");
+}
+
+export function applyLoginItem(openAtLogin: boolean) {
+  if (loginItemsSupported()) app.setLoginItemSettings({ openAtLogin });
+}
+
+/** One-time hints the player has already seen (not settings: nothing to change in the window). */
+export function hasSeen(hint: string): boolean {
+  return readJson<Record<string, boolean>>("seen.json")?.[hint] === true;
+}
+
+export function markSeen(hint: string) {
+  writeJson("seen.json", { ...readJson<Record<string, boolean>>("seen.json"), [hint]: true });
 }
 
 export interface PairingRecord {

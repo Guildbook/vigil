@@ -1,15 +1,17 @@
 // Writes a synthetic combat log into a folder in real time, as the client would, so the companion can be
 // tried without the game: `pnpm demo:log /tmp/vigil-demo/Logs` and point the companion at that folder.
-// Rhune (Protection Warrior) fights a Defias Pillager, then Rhahk'Zor; the cycle repeats.
+// Rhune (Protection Warrior) fights a Defias Pillager, then Rhahk'Zor; the cycle repeats. DEMO_SCENARIO=raid
+// replays a Molten Core Ragnaros kill with an eight-player raid instead.
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { warriorLog } from "../test/support/combatlog";
+import { raidLog, warriorLog } from "../test/support/combatlog";
 
 const dir = path.resolve(process.argv[2] ?? "/tmp/vigil-demo/Logs");
 const speed = Number(process.env.DEMO_SPEED ?? 1);
 const cycles = Number(process.env.DEMO_CYCLES ?? 3);
 const LEAD_MS = 3_000;
-const CYCLE_MS = 110_000;
+const raid = process.env.DEMO_SCENARIO === "raid";
+const CYCLE_MS = raid ? 80_000 : 110_000;
 
 mkdirSync(dir, { recursive: true });
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "_").slice(0, 15);
@@ -28,7 +30,7 @@ const wall0 = Date.now();
 const lines: { at: number; text: string }[] = [];
 for (let c = 0; c < cycles; c++) {
   const start = new Date(wall0 + LEAD_MS + c * CYCLE_MS);
-  const text = warriorLog({ start, tzHours: 0 }).trimEnd().split("\n");
+  const text = (raid ? raidLog : warriorLog)({ start, tzHours: 0 }).trimEnd().split("\n");
   // The header only belongs at the top of the file.
   for (const line of c === 0 ? text : text.slice(1)) lines.push({ at: lineTime(line), text: line });
 }

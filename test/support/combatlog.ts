@@ -150,6 +150,12 @@ export class LogBuilder {
     return this.raw(ms, `SPELL_AURA_${type},${this.units(src, dst)},${this.spell(id, name)},${auraType}${extra}`);
   }
 
+  /** Retail layout: the advanced block (for the victim) comes before the environment type. */
+  environmental(ms: number, dst: Unit, kind: string, amount: number) {
+    const adv = this.adv(dst, undefined);
+    return this.raw(ms, `ENVIRONMENTAL_DAMAGE,${this.units(null, dst)}${adv ? `,${adv}` : ""},${kind},${this.damageSuffix(amount, {})}`);
+  }
+
   died(ms: number, dst: Unit) {
     return this.raw(ms, `UNIT_DIED,${this.units(null, dst)},0`);
   }
@@ -219,6 +225,75 @@ export function paladinLog(): string {
   return b.text();
 }
 
+interface TankState {
+  rage: number;
+}
+
+/**
+ * Rhune tanks `target` from `start` for `length` ms: Revenge on dodges and parries, Sunder Armor, Shield Block,
+ * Heroic Strike at high rage and one Bloodrage. With `wasteRevengeAt`, one Revenge window goes unused.
+ */
+function tankFight(b: LogBuilder, me: Unit, target: Unit, start: number, length: number, wasteRevengeAt: number | null, st: TankState) {
+  const r = (cost = 0): Power => ({ type: 1, current: st.rage * 10, max: 1000, cost: cost * 10 });
+  let gcdFree = 500;
+  let lastRevenge = -Infinity;
+  let lastTrigger = -Infinity;
+  let lastBlock = -Infinity;
+  let sunders = 0;
+  let mobSwing = 0;
+  let n = 0;
+  for (let t = 0; t < length; t += 100) {
+    const at = start + t;
+    if (t === 800) {
+      b.cast(at, me, null, 2687, "Bloodrage");
+      b.energize(at, me, 2687, "Bloodrage", 10, 1, r());
+      st.rage = Math.min(100, st.rage + 10);
+    }
+    if (t === mobSwing) {
+      const kind = n++ % 5;
+      if (kind === 1) b.swingMiss(at, target, me, "DODGE");
+      else if (kind === 3) b.swingMiss(at, target, me, "PARRY");
+      else b.swing(at, target, me, 40, { blocked: kind === 4 ? 20 : 0 });
+      if (kind === 1 || kind === 3 || kind === 4) lastTrigger = t;
+      st.rage = Math.min(100, st.rage + 6);
+      mobSwing += 2000;
+    }
+    if (t % 2600 === 300) {
+      if (st.rage >= 60 && Math.floor(t / 2600) % 2 === 0) {
+        st.rage -= 15;
+        b.damage(at, me, target, 285, "Heroic Strike", 90, { power: r(15) });
+      } else {
+        st.rage = Math.min(100, st.rage + 8);
+        b.swing(at, me, target, 55, { power: r() });
+      }
+    }
+    if (t - lastBlock >= 10_000 && st.rage >= 10 && t >= 1000) {
+      st.rage -= 10;
+      b.cast(at, me, null, 2565, "Shield Block", r(10));
+      b.aura(at, "APPLIED", me, me, 2565, "Shield Block");
+      b.aura(at + 5000, "REMOVED", me, me, 2565, "Shield Block");
+      lastBlock = t;
+    }
+    if (t < gcdFree) continue;
+    const wasted = wasteRevengeAt !== null && t >= wasteRevengeAt && t < wasteRevengeAt + 5000;
+    const revengeUp = t - lastTrigger < 5000 && lastTrigger > lastRevenge && t - lastRevenge >= 5000;
+    if (revengeUp && !wasted && st.rage >= 5) {
+      st.rage -= 5;
+      b.cast(at, me, target, 6572, "Revenge", r(5));
+      b.damage(at + 10, me, target, 6572, "Revenge", 70, { power: r() });
+      lastRevenge = t;
+      gcdFree = t + 1500;
+    } else if (st.rage >= 15 && (sunders < 5 || !revengeUp)) {
+      st.rage -= 15;
+      b.cast(at, me, target, 7386, "Sunder Armor", r(15));
+      sunders++;
+      const stacks = Math.min(5, sunders);
+      b.aura(at + 10, sunders === 1 ? "APPLIED" : "APPLIED_DOSE", me, target, 7386, "Sunder Armor", "DEBUFF", stacks);
+      gcdFree = t + 1500 + (sunders > 5 ? 1500 : 0);
+    }
+  }
+}
+
 /**
  * Rhune, level 30 Protection Warrior (Revenge, Sunder, Shield Block, Heroic Strike, Bloodrage; no Shield
  * Slam yet). One trash pull and one boss encounter. The boar dodges and parries give Revenge windows,
@@ -228,78 +303,100 @@ export function warriorLog(opts: { start?: Date; tzHours?: number } = {}): strin
   const b = new LogBuilder(opts);
   b.level = 30;
   const me = WARRIOR;
-  let rage = 20;
-  const r = (cost = 0): Power => ({ type: 1, current: rage * 10, max: 1000, cost: cost * 10 });
+  const st = { rage: 20 };
   const mob = mobUnit("Defias Pillager", 589, 10);
   const boss = mobUnit("Rhahk'Zor", 644, 11);
 
   b.aura(-10_000, "APPLIED", me, me, 71, "Defensive Stance");
-
-  const fight = (start: number, target: Unit, length: number, wasteRevengeAt: number | null) => {
-    let gcdFree = 500;
-    let lastRevenge = -Infinity;
-    let lastTrigger = -Infinity;
-    let lastBlock = -Infinity;
-    let sunders = 0;
-    let mobSwing = 0;
-    let n = 0;
-    for (let t = 0; t < length; t += 100) {
-      const at = start + t;
-      if (t === 800) {
-        b.cast(at, me, null, 2687, "Bloodrage");
-        b.energize(at, me, 2687, "Bloodrage", 10, 1, r());
-        rage = Math.min(100, rage + 10);
-      }
-      if (t === mobSwing) {
-        const kind = n++ % 5;
-        if (kind === 1) b.swingMiss(at, target, me, "DODGE");
-        else if (kind === 3) b.swingMiss(at, target, me, "PARRY");
-        else b.swing(at, target, me, 40, { blocked: kind === 4 ? 20 : 0 });
-        if (kind === 1 || kind === 3 || kind === 4) lastTrigger = t;
-        rage = Math.min(100, rage + 6);
-        mobSwing += 2000;
-      }
-      if (t % 2600 === 300) {
-        if (rage >= 60 && Math.floor(t / 2600) % 2 === 0) {
-          rage -= 15;
-          b.damage(at, me, target, 285, "Heroic Strike", 90, { power: r(15) });
-        } else {
-          rage = Math.min(100, rage + 8);
-          b.swing(at, me, target, 55, { power: r() });
-        }
-      }
-      if (t - lastBlock >= 10_000 && rage >= 10 && t >= 1000) {
-        rage -= 10;
-        b.cast(at, me, null, 2565, "Shield Block", r(10));
-        b.aura(at, "APPLIED", me, me, 2565, "Shield Block");
-        b.aura(at + 5000, "REMOVED", me, me, 2565, "Shield Block");
-        lastBlock = t;
-      }
-      if (t < gcdFree) continue;
-      const wasted = wasteRevengeAt !== null && t >= wasteRevengeAt && t < wasteRevengeAt + 5000;
-      const revengeUp = t - lastTrigger < 5000 && lastTrigger > lastRevenge && t - lastRevenge >= 5000;
-      if (revengeUp && !wasted && rage >= 5) {
-        rage -= 5;
-        b.cast(at, me, target, 6572, "Revenge", r(5));
-        b.damage(at + 10, me, target, 6572, "Revenge", 70, { power: r() });
-        lastRevenge = t;
-        gcdFree = t + 1500;
-      } else if (rage >= 15 && (sunders < 5 || !revengeUp)) {
-        rage -= 15;
-        b.cast(at, me, target, 7386, "Sunder Armor", r(15));
-        sunders++;
-        const stacks = Math.min(5, sunders);
-        b.aura(at + 10, sunders === 1 ? "APPLIED" : "APPLIED_DOSE", me, target, 7386, "Sunder Armor", "DEBUFF", stacks);
-        gcdFree = t + 1500 + (sunders > 5 ? 1500 : 0);
-      }
-    }
-    b.died(start + length, target);
-  };
-
-  fight(0, mob, 24_000, 12_000);
-  rage = 95;
+  tankFight(b, me, mob, 0, 24_000, 12_000, st);
+  b.died(24_000, mob);
+  st.rage = 95;
   b.encounterStart(60_000, 1144, "Rhahk'Zor");
-  fight(60_500, boss, 30_000, null);
+  tankFight(b, me, boss, 60_500, 30_000, null, st);
+  b.died(90_500, boss);
   b.encounterEnd(91_000, 1144, "Rhahk'Zor", true, 31_000);
+  return b.text();
+}
+
+/** A raid member (party or raid affiliation, not the recorder). */
+export function raidMember(name: string, id: string): Unit {
+  return { guid: `Player-4395-${id}`, name: `${name}-Forever-US`, flags: "0x514" };
+}
+
+export const RAID = {
+  paladin: raidMember("Aelwyn", "0000C001"),
+  priest: raidMember("Sorrel", "0000C002"),
+  mage: raidMember("Vexa", "0000C003"),
+  rogue: raidMember("Kestrel", "0000C004"),
+  hunter: raidMember("Bramble", "0000C005"),
+  warlock: raidMember("Nyx", "0000C006"),
+  druid: raidMember("Fen", "0000C007"),
+  warrior: raidMember("Brakk", "0000C008"),
+};
+
+/**
+ * Molten Core, Ragnaros (encounter 672, NPC 11502): Rhune tanks with eight raid members. Ragnaros hits the tank
+ * with Elemental Fire, knocks melee back with Wrath of Ragnaros and throws Lava Burst; Kestrel dies to a Wrath,
+ * Nyx to lava. The kill lands at 60 s.
+ */
+export function raidLog(opts: { start?: Date; tzHours?: number } = {}): string {
+  const b = new LogBuilder(opts);
+  b.level = 60;
+  const me = WARRIOR;
+  const rag = mobUnit("Ragnaros", 11502, 20);
+  const R = RAID;
+  const st = { rage: 40 };
+  const len = 60_000;
+
+  b.aura(-10_000, "APPLIED", me, me, 71, "Defensive Stance");
+  b.cast(-8000, R.priest, R.mage, 10938, "Power Word: Fortitude");
+  b.aura(-8000, "APPLIED", R.priest, R.mage, 10938, "Power Word: Fortitude");
+  b.encounterStart(0, 672, "Ragnaros");
+  tankFight(b, me, rag, 500, len - 1000, null, st);
+
+  const dps: [Unit, number, string, number, number][] = [
+    [R.mage, 10181, "Frostbolt", 1100, 2600],
+    [R.hunter, 20904, "Aimed Shot", 1250, 3100],
+    [R.warlock, 11661, "Shadow Bolt", 1050, 2700],
+    [R.rogue, 11294, "Sinister Strike", 620, 1300],
+    [R.warrior, 23894, "Bloodthirst", 780, 1600],
+  ];
+  for (const [unit, id, name, amount, every] of dps) {
+    for (let t = 900; t < len - 500; t += every) {
+      if (unit === R.rogue && t > 31_000) break;
+      if (unit === R.warlock && t > 44_000) break;
+      b.cast(t, unit, rag, id, name);
+      b.damage(t + 20, unit, rag, id, name, amount + ((t / every) % 3) * 40, { crit: (t / every) % 7 === 0 });
+    }
+  }
+  const heals: [Unit, number, string, number, number][] = [
+    [R.paladin, 19968, "Holy Light", 1800, 2600],
+    [R.priest, 10965, "Greater Heal", 2100, 3200],
+    [R.druid, 9841, "Rejuvenation", 540, 3000],
+  ];
+  for (const [unit, id, name, amount, every] of heals) {
+    for (let t = 1500; t < len - 500; t += every) {
+      b.cast(t, unit, me, id, name);
+      b.heal(t + 20, unit, me, id, name, amount, Math.round(amount * 0.2));
+    }
+  }
+
+  for (let t = 3000; t < len; t += 3000) b.damage(t, rag, me, 20564, "Elemental Fire", 480, { periodic: true, school: "0x4" });
+  for (const t of [12_000, 31_000, 50_000]) {
+    for (const [unit, amount] of [[me, 1400], [R.rogue, 2300], [R.warrior, 2200]] as const) {
+      b.damage(t, rag, unit, 20566, "Wrath of Ragnaros", amount, { school: "0x4" });
+    }
+  }
+  b.died(31_050, R.rogue);
+  for (const t of [18_000, 38_000]) {
+    for (const [unit, amount] of [[R.mage, 1900], [R.warlock, 2000], [R.hunter, 1850]] as const) {
+      b.damage(t, rag, unit, 21158, "Lava Burst", amount, { school: "0x4" });
+    }
+  }
+  b.environmental(44_100, R.warlock, "Lava", 2400);
+  b.died(44_200, R.warlock);
+  b.damage(26_000, rag, R.priest, 20565, "Magma Blast", 2600, { school: "0x4" });
+  b.died(len, rag);
+  b.encounterEnd(len + 200, 672, "Ragnaros", true, len);
   return b.text();
 }

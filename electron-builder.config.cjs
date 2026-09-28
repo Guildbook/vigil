@@ -6,14 +6,24 @@ const { signing } = require("./scripts/signing.cjs");
 const env = process.env;
 const { macSigned, macNotarized, azure, winSigned } = signing(env);
 
-/** @type {import("electron-builder").Configuration} */
+/**
+ * The name and ids repeat src/core/identity.ts and package.json (productName, desktopName); test/identity.test.ts
+ * keeps them in step. Every icon comes from build/icon.png (build/icon-mac.png, with the macOS margin, for the .icns).
+ * @type {import("electron-builder").Configuration}
+ */
 module.exports = {
   appId: "io.guildbook.vigil",
   productName: "Vigil",
   copyright: "Copyright Guildbook contributors",
   directories: { output: "release", buildResources: "build" },
   files: ["dist/**/*", "package.json"],
-  extraResources: [{ from: "resources/addon", to: "addon" }],
+  extraResources: [
+    { from: "resources/addon", to: "addon" },
+    // Tray icons (scripts/tray-icons.ts), read from disk by Tray: template PNGs on macOS, .ico on Windows, PNG on Linux.
+    { from: "resources/tray", to: "tray" },
+    // The window, notification and About panel icon on Windows and Linux (src/main/identity.ts).
+    { from: "build/icon.png", to: "icon.png" },
+  ],
   electronLanguages: ["en", "en-US"],
   protocols: [{ name: "Vigil pairing", schemes: ["vigil-companion"] }],
   artifactName: "Vigil-${version}-${os}-${arch}.${ext}",
@@ -50,11 +60,26 @@ module.exports = {
         }
       : undefined,
   },
-  nsis: { oneClick: true, perMachine: false, deleteAppDataOnUninstall: false },
+  // The shortcut carries appId as its AppUserModelID; src/main/identity.ts sets the same id at runtime.
+  nsis: {
+    oneClick: true,
+    perMachine: false,
+    deleteAppDataOnUninstall: false,
+    installerIcon: "build/icon.ico",
+    uninstallerIcon: "build/icon.ico",
+    installerHeaderIcon: "build/icon.ico",
+    shortcutName: "Vigil",
+    uninstallDisplayName: "Vigil",
+  },
 
   linux: {
     target: [{ target: "AppImage", arch: ["x64"] }],
     icon: "build/icon.png",
+    // vigil.desktop, Icon=vigil and StartupWMClass=vigil, matching package.json's desktopName, which Electron uses
+    // as the window's WM_CLASS and Wayland app_id; without the match docks show a generic icon.
+    executableName: "vigil",
+    syncDesktopName: true,
+    desktop: { entry: { Name: "Vigil", StartupWMClass: "vigil" } },
     category: "Utility",
     synopsis: "Live combat log analysis for WoW: Forever",
   },

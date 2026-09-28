@@ -1,5 +1,9 @@
+import { CLASS_INFO, FACTION_LABELS, type Faction, type WowClass } from "@/lib/game";
 import type { Callout, LiveFight } from "@/lib/vigil/live";
-import type { AppState, CompanionBridge, FightSummary, Settings } from "../core/protocol";
+import type { Boss, BossAbility, RaidId } from "../data/bosses";
+import type { GroupAbilityView, GroupFightView, GroupPlayerView } from "../core/group";
+import { bossByKey, bossesByRaid } from "../core/intel";
+import type { AppState, CompanionBridge, FightSummary, Identity, Settings } from "../core/protocol";
 
 declare global {
   interface Window {
@@ -11,7 +15,12 @@ const api = window.vigil;
 const root = document.getElementById("app")!;
 
 let state: AppState | null = null;
-let view: "live" | "settings" = "live";
+let view: "live" | "settings" | "intel" | "fight" = "live";
+let intelRaid: RaidId = "mc";
+let intelBoss: string | null = null;
+/** The fight open in the detail view: a FightSummary id, or a group fight id when there is no summary. */
+let detailId: string | null = null;
+let meter: "damage" | "healing" = "damage";
 let seenCallouts = new Set<string>();
 let pairLink: { code: string } | null = null;
 let pairMessage: { ok: boolean; text: string } | null = null;
@@ -34,6 +43,52 @@ function num(v: number) {
   return v >= 10_000 ? `${(v / 1000).toFixed(1)}k` : String(Math.round(v));
 }
 
+/* Icons. Spell icons and portraits are Blizzard art served by the main process (vigil-media://, cached from
+   Blizzard's render CDN); class and faction icons ship with the app. */
+
+const ENVIRONMENT_ICONS: Record<string, string> = {
+  lava: "spell_fire_volcano",
+  fire: "spell_fire_fire",
+  falling: "ability_rogue_quickrecovery",
+  drowning: "spell_shadow_demonbreath",
+  slime: "ability_creature_poison_03",
+  fatigue: "spell_nature_sleep",
+};
+
+function img(src: string, size: number, cls: string, title = "") {
+  return `<img class="${cls}" src="${esc(src)}" width="${size}" height="${size}" alt="" loading="lazy" draggable="false"${title ? ` title="${esc(title)}"` : ""} />`;
+}
+
+/** An ability's icon: by spell ID, else by name (class spells), with melee and environment drawn from known icons. */
+function spellIcon(spellId: number | null, name: string, size = 18, source?: string, icon?: string) {
+  const px = size > 36 ? 56 : 36;
+  let src: string;
+  if (icon) src = `vigil-media://icon/${px}/${icon}`;
+  else if (spellId) src = `vigil-media://spell/${px}/${spellId}`;
+  else if (name === "Melee") src = `vigil-media://icon/${px}/ability_meleedamage`;
+  else if (source === "Environment" && ENVIRONMENT_ICONS[name.toLowerCase()]) src = `vigil-media://icon/${px}/${ENVIRONMENT_ICONS[name.toLowerCase()]}`;
+  else src = `vigil-media://spell-name/${px}/${encodeURIComponent(name)}`;
+  return img(src, size, "ic");
+}
+
+function classIcon(wowClass: WowClass | null, size = 18) {
+  return wowClass
+    ? img(`icons/classes/${wowClass}.jpg`, size, "ic cls", CLASS_INFO[wowClass].label)
+    : img("icons/fallback.svg", size, "ic cls", "Class not known yet");
+}
+
+function factionIcon(faction: Faction, size = 14) {
+  return img(`icons/factions/${faction}.jpg`, size, "ic fac", FACTION_LABELS[faction]);
+}
+
+function portrait(displayId: number | null, size: number, view: "portrait" | "zoom" = "portrait") {
+  return displayId
+    ? img(`vigil-media://npc/${view}/${displayId}`, size, `portrait ${view}`)
+    : img("icons/fallback.svg", size, `portrait ${view}`);
+}
+
+const classColor = (c: WowClass | null) => (c ? `cc-${c}` : "");
+
 function statusLine(s: AppState) {
   const e = s.engine;
   if (!s.logsDir) return `<span class="dot warn"></span>No WoW Logs folder found. Choose one in settings.`;
@@ -46,15 +101,25 @@ function statusLine(s: AppState) {
   return `<span class="dot live"></span>${who}${model ? `, ${model}` : ""} <span title="${esc(e.status.file)}">in ${esc(file)}</span>`;
 }
 
+/** Top right: the recording character's class icon, with the faction as a badge when it is known. */
+function renderIdentity(id: Identity | null) {
+  if (!id) return "";
+  const cls = id.wowClass ? CLASS_INFO[id.wowClass].label : "class not known yet";
+  const title = `${id.name}${id.level ? `, level ${id.level}` : ""} ${cls}${id.faction ? `, ${FACTION_LABELS[id.faction]}` : ""}`;
+  return `<div class="identity" title="${esc(title)}">${classIcon(id.wowClass, 26)}${id.faction ? factionIcon(id.faction, 13) : ""}</div>`;
+}
+
 function renderTopbar(s: AppState) {
   const compact = s.settings.mode === "compact";
   return `
     <header class="topbar">
       <h1>VIGIL</h1>
       <div class="status">${statusLine(s)}</div>
+      ${compact ? "" : `<button class="icon ${view === "intel" ? "on" : ""}" data-act="intel" title="Boss intel">${view === "intel" ? "Done" : "Intel"}</button>`}
       <button class="icon ${s.settings.alwaysOnTop ? "on" : ""}" data-act="pin" title="Keep on top">Pin</button>
       <button class="icon" data-act="mode" title="${compact ? "Full view" : "Compact view"}">${compact ? "Full" : "Compact"}</button>
       <button class="icon ${view === "settings" ? "on" : ""}" data-act="settings" title="Settings">${view === "settings" ? "Done" : "Settings"}</button>
+      ${renderIdentity(s.identity)}
     </header>`;
 }
 
@@ -93,16 +158,18 @@ function renderCurrent(s: AppState) {
         .map(
           (u) => `
       <div class="uptime">
-        <div class="label">${esc(u.label)} <span class="pill ${u.active ? "up" : "down"}">${u.active ? "up" : "down"}</span></div>
+        <div class="label">${spellIcon(null, u.label, 16)}${esc(u.label)} <span class="pill ${u.active ? "up" : "down"}">${u.active ? "up" : "down"}</span></div>
         <div class="pct">${pct(u.pct)}</div>
         <div class="bar" title="Target ${pct(u.targetPct)}"><span data-width="${Math.round(u.pct * 100)}"></span><i data-left="${Math.round(u.targetPct * 100)}"></i></div>
       </div>`,
         )
         .join("");
   const others = f.targets.length > 1 ? ` and ${f.targets.length - 1} more` : "";
+  const boss = s.engine?.group?.boss;
   return `
     <section class="panel">
       <div class="fight-head">
+        ${boss ? portrait(boss.displayId, compact ? 34 : 46) : ""}
         <div class="who">
           <div class="target" title="${esc(f.targets.join(", "))}">${esc(f.label)}</div>
           <div class="sub">${f.kind === "boss" ? `<span class="pill boss">Boss</span> ` : ""}${clock(f.elapsedMs)}${esc(others)}</div>
@@ -151,23 +218,291 @@ function renderFights(s: AppState) {
   if (s.settings.mode === "compact") return "";
   const items = s.fights
     .slice(0, 15)
-    .map(
-      (f) => `
+    .map((f) => {
+      const g = f.groupId ? s.groupFights.find((x) => x.id === f.groupId) : null;
+      return `
       <li>
         <div class="fscore ${tone(f.score)}">${Math.round(f.score)}</div>
+        ${g?.boss ? portrait(g.boss.displayId, 30) : ""}
         <div class="meta">
           <div class="name">${f.kind === "boss" ? `<span class="pill boss">Boss</span> ` : ""}${esc(f.label)}</div>
-          <div class="detail">${clock(f.durationMs)}, ${pct(f.gcdUsage)} GCD, ${num(f.perSecond)} ${metricUnit(f.metric)}${f.modelLabel ? `, ${esc(f.modelLabel)}` : ""}</div>
+          <div class="detail">${clock(f.durationMs)}, ${pct(f.gcdUsage)} GCD, ${num(f.perSecond)} ${metricUnit(f.metric)}${f.modelLabel ? `, ${esc(f.modelLabel)}` : ""}${
+            g?.deaths.length ? `, ${g.deaths.length} ${g.deaths.length === 1 ? "death" : "deaths"}` : ""
+          }</div>
           ${uploadLine(f)}
         </div>
-      </li>`,
-    )
+        <button class="icon" data-detail="${esc(f.id)}" title="Fight details">Details</button>
+      </li>`;
+    })
     .join("");
   return `<section class="panel"><h2>Recent fights</h2>${items ? `<ul class="fights">${items}</ul>` : `<p class="empty">Finished fights are listed here.</p>`}</section>`;
 }
 
 function renderLive(s: AppState) {
-  return renderCurrent(s) + renderCallouts(s) + renderFights(s);
+  const g = s.engine?.group ?? null;
+  const compact = s.settings.mode === "compact";
+  return renderCurrent(s) + (compact ? "" : renderLiveIntel(g) + renderGroup(g, 10)) + renderCallouts(s) + renderFights(s);
+}
+
+/* Group meter and deaths. */
+
+function renderMeterRows(players: GroupPlayerView[], limit: number) {
+  const value = (p: GroupPlayerView) => (meter === "damage" ? p.damage : p.healing);
+  const rate = (p: GroupPlayerView) => (meter === "damage" ? p.dps : p.hps);
+  const list = players.filter((p) => value(p) > 0).sort((a, b) => value(b) - value(a));
+  const top = list[0] ? value(list[0]) : 0;
+  const rows = list
+    .slice(0, limit)
+    .map(
+      (p, i) => `
+      <li class="${p.isMe ? "me" : ""}">
+        <span class="rank">${i + 1}</span>${classIcon(p.wowClass)}
+        <span class="pname ${classColor(p.wowClass)}">${esc(p.name)}</span>
+        <span class="amount">${num(rate(p))}</span>
+        <span class="mbar"><span class="${classColor(p.wowClass)}" data-width="${top ? Math.max(2, Math.round((value(p) / top) * 100)) : 0}"></span></span>
+      </li>`,
+    )
+    .join("");
+  const more = list.length > limit ? `<p class="note">${list.length - limit} more</p>` : "";
+  return rows ? `<ol class="meter">${rows}</ol>${more}` : `<p class="empty">No ${meter} yet.</p>`;
+}
+
+function renderDeaths(g: GroupFightView) {
+  if (!g.deaths.length) return "";
+  const rows = g.deaths
+    .map(
+      (d) => `
+      <li class="${d.isMe ? "me" : ""}">
+        <span class="t">${clock(d.offsetMs)}</span>${classIcon(d.wowClass)}
+        <span class="pname ${classColor(d.wowClass)}">${esc(d.name)}</span>
+        ${
+          d.blow
+            ? `<span class="blow">${spellIcon(d.blow.spellId, d.blow.name, 16, d.blow.source)}${esc(d.blow.name)} <span class="muted">${num(d.blow.amount)}${
+                d.blow.source !== "Environment" ? `, ${esc(d.blow.source)}` : ""
+              }</span></span>`
+            : `<span class="blow muted">No hit logged</span>`
+        }
+      </li>`,
+    )
+    .join("");
+  return `<h3 class="sub-h">Deaths</h3><ul class="deaths">${rows}</ul>`;
+}
+
+function meterToggle() {
+  return `<div class="seg">${(["damage", "healing"] as const)
+    .map((m) => `<button class="${meter === m ? "on" : ""}" data-meter="${m}">${m === "damage" ? "Damage" : "Healing"}</button>`)
+    .join("")}</div>`;
+}
+
+function renderGroup(g: GroupFightView | null, limit: number) {
+  if (!g || g.players.length === 0) return "";
+  return `
+    <section class="panel">
+      <div class="panel-head"><h2>Group</h2>${g.faction ? factionIcon(g.faction, 16) : ""}<span class="grow"></span>${meterToggle()}</div>
+      ${renderMeterRows(g.players, limit)}
+      ${renderDeaths(g)}
+    </section>`;
+}
+
+/* Boss intel. */
+
+const TAG_LABELS: Record<string, string> = {
+  tank: "Tank",
+  healer: "Healer",
+  melee: "Melee",
+  ranged: "Ranged",
+  raid: "Raid",
+  dispel: "Dispel",
+  decurse: "Decurse",
+  interrupt: "Interrupt",
+  move: "Move",
+  fear: "Fear",
+  knockback: "Knockback",
+  adds: "Adds",
+};
+
+/** Observed numbers for one intel ability in a fight, summed over the spell IDs and sources it covers. */
+function observedFor(g: GroupFightView | null, key: string) {
+  const rows = g?.abilities.filter((a) => a.intelKey === key) ?? [];
+  if (!rows.length) return null;
+  return {
+    damage: rows.reduce((n, a) => n + a.damage, 0),
+    players: Math.max(...rows.map((a) => a.players)),
+    kills: rows.reduce((n, a) => n + a.kills, 0),
+    debuffs: rows.reduce((n, a) => n + a.debuffs, 0),
+  };
+}
+
+function observedLine(o: ReturnType<typeof observedFor>) {
+  if (!o) return "";
+  const parts = [
+    o.damage ? `${num(o.damage)} damage` : "",
+    o.debuffs ? `${o.debuffs} ${o.debuffs === 1 ? "application" : "applications"}` : "",
+    `${o.players} ${o.players === 1 ? "player" : "players"}`,
+    o.kills ? `${o.kills} ${o.kills === 1 ? "death" : "deaths"}` : "",
+  ].filter(Boolean);
+  return `<span class="observed ${o.kills ? "bad" : ""}">${parts.join(", ")}</span>`;
+}
+
+function renderAbility(a: BossAbility, g: GroupFightView | null, full: boolean) {
+  const o = observedFor(g, a.key);
+  const tags = a.tags.map((t) => `<span class="pill tag">${TAG_LABELS[t]}</span>`).join("");
+  return `
+    <li class="ability ${o ? "seen" : ""}">
+      ${spellIcon(a.spellIds[0] ?? null, a.name, full ? 36 : 22, undefined, a.icon)}
+      <div class="grow">
+        <div class="aname">${esc(a.name)}${a.source ? ` <span class="muted">${esc(a.source)}</span>` : ""}</div>
+        ${full ? `<div class="tags">${tags}</div><p class="asum">${esc(a.summary)}</p><p class="acounter">${esc(a.counter)}</p>` : ""}
+        ${full && a.uncertain ? `<p class="uncertain">Unconfirmed: ${esc(a.uncertain)}</p>` : ""}
+        ${observedLine(o)}
+      </div>
+    </li>`;
+}
+
+function renderLiveIntel(g: GroupFightView | null) {
+  const boss = g?.boss ? bossByKey(g.boss.key) : null;
+  if (!boss || boss.status !== "full") return "";
+  return `
+    <section class="panel">
+      <div class="panel-head"><h2>Boss intel</h2><span class="grow"></span><button class="link" data-intel="${esc(boss.key)}">All about ${esc(boss.name)}</button></div>
+      <ul class="abilities compact">${boss.abilities.map((a) => renderAbility(a, g, false)).join("")}</ul>
+    </section>`;
+}
+
+/** Hostile abilities that hit the group, with the ones the intel lists marked. */
+function renderTaken(g: GroupFightView, limit = 12) {
+  const list = g.abilities.filter((a) => a.damage > 0 || a.debuffs > 0).slice(0, limit);
+  if (!list.length) return "";
+  const top = Math.max(...list.map((a) => a.damage), 1);
+  const rows = list
+    .map(
+      (a: GroupAbilityView) => `
+      <li>
+        ${spellIcon(a.spellId, a.name, 22, a.source)}
+        <div class="grow">
+          <div class="aname">${esc(a.name)} <span class="muted">${esc(a.source)}</span>${a.intelKey ? ` <span class="pill boss">Intel</span>` : ""}</div>
+          <div class="detail">${a.damage ? `${num(a.damage)} damage, ` : ""}${a.hits ? `${a.hits} ${a.hits === 1 ? "hit" : "hits"}, ` : ""}${
+            a.debuffs ? `${a.debuffs} ${a.debuffs === 1 ? "debuff" : "debuffs"}, ` : ""
+          }${a.players} ${
+            a.players === 1 ? "player" : "players"
+          }${a.kills ? `, <span class="bad">${a.kills} ${a.kills === 1 ? "death" : "deaths"}</span>` : ""}</div>
+          <div class="targets">${a.topTargets.map((t) => `${classIcon(t.wowClass, 14)}<span class="${classColor(t.wowClass)}">${esc(t.name)}</span>`).join("")}</div>
+        </div>
+        <span class="mbar short"><span data-width="${Math.round((a.damage / top) * 100)}"></span></span>
+      </li>`,
+    )
+    .join("");
+  return `<section class="panel"><h2>Damage taken by ability</h2><ul class="taken">${rows}</ul></section>`;
+}
+
+/* Fight detail. */
+
+function renderMySpells(g: GroupFightView) {
+  const me = g.players.find((p) => p.isMe);
+  if (!me || !me.spells.length) return "";
+  const total = me.spells.reduce((n, sp) => n + sp.damage + sp.healing, 0) || 1;
+  const rows = me.spells
+    .map((sp) => {
+      const amount = sp.damage + sp.healing;
+      return `
+      <li>
+        ${spellIcon(sp.spellId, sp.name, 22)}
+        <span class="pname">${esc(sp.name)}</span>
+        <span class="amount">${num(amount)}</span>
+        <span class="share">${pct(amount / total)}</span>
+        <span class="mbar"><span class="${sp.healing > sp.damage ? "heal" : ""}" data-width="${Math.round((amount / total) * 100)}"></span></span>
+      </li>`;
+    })
+    .join("");
+  return `<section class="panel"><h2>Your abilities</h2><ul class="spells">${rows}</ul></section>`;
+}
+
+function renderFightDetail(s: AppState) {
+  const f = s.fights.find((x) => x.id === detailId) ?? null;
+  const g = (f?.groupId ? s.groupFights.find((x) => x.id === f.groupId) : s.groupFights.find((x) => x.id === detailId)) ?? null;
+  if (!f && !g) return `<section class="panel"><p class="empty">This fight is no longer in memory.</p></section>`;
+  const boss = g?.boss ? bossByKey(g.boss.key) : null;
+  const result = g?.encounter?.success === true ? "Kill" : g?.encounter?.success === false ? "Wipe" : null;
+  const head = `
+    <section class="panel">
+      <div class="fight-head">
+        ${boss ? portrait(boss.displayId, 56) : ""}
+        <div class="who">
+          <div class="target">${esc(f?.label ?? g!.label)}</div>
+          <div class="sub">${boss ? `${esc(g!.boss!.raid)}, ` : ""}${clock(f?.durationMs ?? g!.durationMs)}${result ? `, ${result}` : ""}${
+            g ? `, ${g.players.length} ${g.players.length === 1 ? "player" : "players"}` : ""
+          }</div>
+        </div>
+        ${f ? `<div class="score ${tone(f.score)}">${Math.round(f.score)}<small>score</small></div>` : ""}
+      </div>
+      <div class="row end"><button data-act="close-detail">Close</button></div>
+    </section>`;
+  if (!g) return head + `<section class="panel"><p class="empty">No group data was recorded for this fight.</p></section>`;
+  const intel =
+    boss && boss.status === "full"
+      ? `<section class="panel"><div class="panel-head"><h2>Boss intel</h2><span class="grow"></span><button class="link" data-intel="${esc(boss.key)}">Open in Intel</button></div><ul class="abilities">${boss.abilities
+          .map((a) => renderAbility(a, g, false))
+          .join("")}</ul></section>`
+      : "";
+  return head + renderMySpells(g) + intel + renderTaken(g) + renderGroup(g, 40);
+}
+
+/* Browsable intel. */
+
+function renderIntel(s: AppState) {
+  const groups = bossesByRaid();
+  const tabs = groups
+    .map(({ raid }) => `<button class="${raid.id === intelRaid ? "on" : ""}" data-raid="${raid.id}" title="${esc(raid.name)}">${esc(raid.short)}</button>`)
+    .join("");
+  const current = groups.find((x) => x.raid.id === intelRaid)!;
+  const boss = intelBoss ? bossByKey(intelBoss) : null;
+  const list = current.bosses
+    .map(
+      (b: Boss) => `
+      <li>
+        <button class="boss-row ${boss?.key === b.key ? "on" : ""}" data-boss="${esc(b.key)}">
+          ${portrait(b.displayId, 32)}
+          <span class="grow">${esc(b.name)}</span>
+          ${b.status === "scaffold" ? `<span class="pill">Soon</span>` : `<span class="pill tag">${b.abilities.length} abilities</span>`}
+        </button>
+      </li>`,
+    )
+    .join("");
+  const detail = boss ? renderBossDetail(s, boss) : "";
+  return `
+    <section class="panel">
+      <div class="panel-head"><h2>Boss intel</h2><span class="grow"></span><span class="muted small">${current.raid.size}-player</span></div>
+      <div class="seg tabs">${tabs}</div>
+      <h3 class="sub-h">${esc(current.raid.name)}</h3>
+      <ul class="boss-list">${list}</ul>
+    </section>
+    ${detail}
+    <p class="note center">Spell data from Blizzard's World of Warcraft Classic Era client; icons and portraits from Blizzard. World of Warcraft is a trademark of Blizzard Entertainment. Vigil is not affiliated with Blizzard.</p>`;
+}
+
+function renderBossDetail(s: AppState, boss: Boss) {
+  const last = s.groupFights.find((g) => g.boss?.key === boss.key) ?? (s.engine?.group?.boss?.key === boss.key ? s.engine.group : null);
+  const abilities = boss.abilities.length
+    ? `<ul class="abilities">${boss.abilities.map((a) => renderAbility(a, last, true)).join("")}</ul>`
+    : `<p class="empty">Abilities for this encounter are not written up yet. Vigil still recognises the fight and lists what hit the group.</p>`;
+  const lastLine = last
+    ? `<p class="note">Observed numbers are from your last ${esc(boss.name)} fight (${clock(last.durationMs)}${
+        last.encounter?.success === true ? ", kill" : last.encounter?.success === false ? ", wipe" : ""
+      }). <button class="link" data-group="${esc(last.id)}">Open that fight</button></p>`
+    : "";
+  return `
+    <section class="panel boss-detail">
+      <div class="boss-hero">
+        ${portrait(boss.displayId, 120, "zoom")}
+        <div class="grow">
+          <div class="target">${esc(boss.name)}</div>
+          <div class="sub">Encounter ${boss.encounterId}${boss.npcIds.length ? `, NPC ${boss.npcIds.join(", ")}` : ""}</div>
+          <p class="asum">${esc(boss.summary)}</p>
+        </div>
+      </div>
+      ${lastLine}
+      ${abilities}
+    </section>`;
 }
 
 function msg(m: { ok: boolean; text: string } | null) {
@@ -179,7 +514,7 @@ function renderSettings(s: AppState) {
   const set = s.settings;
   const pairing = p.paired
     ? `
-      <p>Paired with <strong>${esc(p.guild?.name)}</strong>${p.user?.name ? ` as ${esc(p.user.name)}` : ""}.${
+      <p>Paired with ${s.identity?.faction ? factionIcon(s.identity.faction, 16) + " " : ""}<strong>${esc(p.guild?.name)}</strong>${p.user?.name ? ` as ${esc(p.user.name)}` : ""}.${
         s.server.siteUrl ? ` <button class="link" data-open="${esc(s.server.siteUrl)}/vigil">Open Vigil on the site</button>` : ""
       }</p>
       <p class="note">This computer is listed as "${esc(p.device?.name)}" on the site, where you can revoke it. ${
@@ -255,6 +590,11 @@ function renderSettings(s: AppState) {
       <label class="check"><input type="checkbox" id="on-top" ${set.alwaysOnTop ? "checked" : ""} /> Keep this window on top</label>
     </section>
     <section class="panel">
+      <h2>Background</h2>
+      <label class="check"><input type="checkbox" id="keep-in-tray" ${set.keepInTray ? "checked" : ""} /> Keep running in the ${navigator.userAgent.includes("Mac") ? "menu bar" : "tray"} when closed</label>
+      ${s.canOpenAtLogin ? `<label class="check"><input type="checkbox" id="open-at-login" ${set.openAtLogin ? "checked" : ""} /> Start Vigil when I log in</label>` : ""}
+    </section>
+    <section class="panel">
       <h2>Vigil addon</h2>
       <p class="note">Optional. Bundled version ${esc(s.addon.bundled ?? "unavailable")}.</p>
       ${addon}
@@ -268,8 +608,9 @@ function render() {
   document.body.classList.toggle("compact", state.settings.mode === "compact");
   const scrollEl = root.querySelector(".scroll");
   const scrollTop = scrollEl?.scrollTop ?? 0;
-  root.innerHTML =
-    renderTopbar(state) + renderUpdate(state) + `<main class="scroll">${view === "settings" ? renderSettings(state) : renderLive(state)}</main>`;
+  const body =
+    view === "settings" ? renderSettings(state) : view === "intel" ? renderIntel(state) : view === "fight" ? renderFightDetail(state) : renderLive(state);
+  root.innerHTML = renderTopbar(state) + renderUpdate(state) + `<main class="scroll">${body}</main>`;
   const next = root.querySelector(".scroll");
   if (next) next.scrollTop = scrollTop;
   // The CSP forbids inline style attributes; set bar geometry through the DOM instead.
@@ -281,7 +622,7 @@ function render() {
 function onState(next: AppState) {
   const updateChanged = JSON.stringify(state?.update) !== JSON.stringify(next.update);
   state = next;
-  if (view === "live" || updateChanged) return render();
+  if (view === "live" || view === "fight" || updateChanged) return render();
   const bar = root.querySelector(".topbar .status");
   if (bar) bar.innerHTML = statusLine(next);
 }
@@ -296,6 +637,34 @@ root.addEventListener("click", async (e) => {
   if (!el || !state) return;
   if (el.dataset.open) return void api.openExternal(el.dataset.open);
   if (el.dataset.retry) return void api.retryUpload(el.dataset.retry);
+  if (el.dataset.detail || el.dataset.group) {
+    detailId = el.dataset.detail ?? el.dataset.group!;
+    view = "fight";
+    root.querySelector(".scroll")?.scrollTo(0, 0);
+    return render();
+  }
+  if (el.dataset.meter) {
+    meter = el.dataset.meter as typeof meter;
+    return render();
+  }
+  if (el.dataset.intel) {
+    const boss = bossByKey(el.dataset.intel);
+    if (boss) {
+      intelRaid = boss.raid;
+      intelBoss = boss.key;
+    }
+    view = "intel";
+    return render();
+  }
+  if (el.dataset.raid) {
+    intelRaid = el.dataset.raid as RaidId;
+    intelBoss = null;
+    return render();
+  }
+  if (el.dataset.boss) {
+    intelBoss = intelBoss === el.dataset.boss ? null : el.dataset.boss;
+    return render();
+  }
   if (el.dataset.addon) {
     const r = await api.installAddon(el.dataset.addon);
     addonMessage = { ok: r.ok, text: r.message };
@@ -308,6 +677,13 @@ root.addEventListener("click", async (e) => {
       break;
     case "mode":
       await update({ mode: state.settings.mode === "compact" ? "full" : "compact" });
+      break;
+    case "intel":
+      view = view === "intel" ? "live" : "intel";
+      break;
+    case "close-detail":
+      view = "live";
+      detailId = null;
       break;
     case "settings":
       view = view === "settings" ? "live" : "settings";
@@ -361,6 +737,12 @@ root.addEventListener("change", async (e) => {
       return;
     case "on-top":
       await update({ alwaysOnTop: (el as HTMLInputElement).checked });
+      return;
+    case "keep-in-tray":
+      await update({ keepInTray: (el as HTMLInputElement).checked });
+      return;
+    case "open-at-login":
+      await update({ openAtLogin: (el as HTMLInputElement).checked });
       return;
     default:
       return;

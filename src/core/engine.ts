@@ -1,5 +1,6 @@
 import path from "node:path";
 import { LiveSession, type Callout, type CompletedFight, type LiveFight, type LiveSessionOptions } from "@/lib/vigil/live";
+import { GroupObserver, GroupReader, type GroupFightView, type GroupObserverOptions } from "./group";
 import { LogTailer, type FileChangeReason } from "./tailer";
 
 /**
@@ -39,6 +40,8 @@ export interface EngineSnapshot {
   model: { id: string; label: string } | null;
   log: { version: number | null; advanced: boolean; build: string | null };
   current: LiveFight | null;
+  /** The whole group's side of the fight in progress. */
+  group: GroupFightView | null;
 }
 
 export interface EngineOptions {
@@ -49,6 +52,8 @@ export interface EngineOptions {
   wall?: () => number;
   onFight?: (fight: CompletedFight) => void;
   onCallout?: (callout: Callout) => void;
+  /** The group observer (meters, deaths, boss abilities); off when not given. */
+  group?: Omit<GroupObserverOptions, "onFinished"> & { onFinished?: (fight: GroupFightView) => void };
 }
 
 /** A tailer feeding a live session. `tick()` advances the clock, closes quiet fights and reports the present. */
@@ -57,9 +62,13 @@ export class CompanionEngine {
   private readonly tailer: LogTailer;
   private readonly clock: LogClock;
   private status: EngineStatus;
+  private readonly observer: GroupObserver | null;
+  private groupReader: GroupReader;
 
   constructor(private readonly opts: EngineOptions) {
     this.session = new LiveSession(opts.session);
+    this.observer = opts.group ? new GroupObserver(opts.group) : null;
+    this.groupReader = new GroupReader(opts.session?.fallbackYear);
     this.clock = new LogClock(opts.wall);
     this.status = { logsDir: opts.logsDir, file: null, lastChange: null, lines: 0, error: null };
     this.tailer = new LogTailer(
@@ -67,12 +76,22 @@ export class CompanionEngine {
       {
         onLines: (lines) => {
           this.session.pushLines(lines);
+          if (this.observer) {
+            for (const line of lines) {
+              const ev = this.groupReader.read(line);
+              if (ev) this.observer.push(ev);
+            }
+          }
           this.status.lines += lines.length;
           this.clock.seen(this.session.lastEventT);
           this.emit();
         },
         onFileChange: (file, reason) => {
-          if (reason !== "initial") this.session.newFile();
+          if (reason !== "initial") {
+            this.session.newFile();
+            this.observer?.reset();
+            this.groupReader = new GroupReader(opts.session?.fallbackYear);
+          }
           this.status.file = file ? path.join(opts.logsDir, file) : null;
           this.status.lastChange = reason;
           this.status.error = null;
@@ -111,6 +130,8 @@ export class CompanionEngine {
     const now = this.clock.now();
     if (now !== null) this.session.tick(now);
     const current = now !== null ? this.session.current(now) : null;
+    if (now !== null) this.observer?.tick(now);
+    const group = now !== null ? (this.observer?.current(now) ?? null) : null;
     this.emit();
     const model = this.session.model;
     const header = this.session.header;
@@ -120,7 +141,18 @@ export class CompanionEngine {
       model: model ? { id: model.id, label: model.label } : null,
       log: { version: header.version, advanced: header.advanced, build: header.build },
       current,
+      group,
     };
+  }
+
+  /** A player's class as the group observer sees it (site, then spells cast). */
+  classOf(guid: string) {
+    return this.observer?.classOf(guid) ?? null;
+  }
+
+  /** Finished group fights, newest first. */
+  groupFights(): GroupFightView[] {
+    return this.observer?.recent() ?? [];
   }
 
   private emit() {

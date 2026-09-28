@@ -4,11 +4,12 @@ import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { devElectron } from "./dev-app.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pkg = path.resolve(here, "..");
 const require = createRequire(import.meta.url);
-const electron = require("electron");
+const electron = devElectron(require("electron"), pkg);
 
 rmSync(path.join(pkg, "dist"), { recursive: true, force: true });
 const watcher = spawn(process.execPath, [path.join(here, "build.mjs"), "--watch"], { cwd: pkg, stdio: "inherit" });

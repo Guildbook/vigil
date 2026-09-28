@@ -68,6 +68,22 @@ describe("Uploader", () => {
     expect(h.unauthorized()).toBe("revoked");
     expect(h.timers).toEqual([]);
   });
+
+  it("holds the queue while paused and sends it on resume", async () => {
+    const h = harness([json(201, { url: "u1" }), json(201, { url: "u2" })]);
+    h.up.setPaused(true);
+    h.up.enqueue("f1", boar!);
+    h.up.enqueue("f2", boar!);
+    await h.flush();
+    expect(h.calls).toEqual([]);
+    expect(h.up.pending).toBe(2);
+    expect(h.up.isPaused).toBe(true);
+    h.up.setPaused(false);
+    await h.flush();
+    await h.flush();
+    expect(h.calls).toHaveLength(2);
+    expect(h.up.pending).toBe(0);
+  });
 });
 
 describe("skipReason", () => {
