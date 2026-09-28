@@ -1,4 +1,6 @@
 import type { FightReport } from "@/lib/vigil/report";
+import type { Boss } from "../data/bosses";
+import { bossAmong } from "./intel";
 import type { Settings, UploadState } from "./protocol";
 
 export interface UploadTarget {
@@ -120,7 +122,34 @@ export class Uploader {
   }
 }
 
-/** Why a finished fight should not be uploaded, or null to upload it. */
+/**
+ * The report as a boss fight when the log had no ENCOUNTER_START but a known boss was among the targets (Classic
+ * Era dungeons never log encounters). It gets the boss's name and the client's DungeonEncounter ID, so the site
+ * files it with that boss, and success when the boss died. A boss without an encounter ID (a rare elite) is only
+ * relabelled. Other reports come back unchanged.
+ */
+export function asBossFight(report: FightReport): FightReport {
+  if (report.fight.kind === "boss") return report;
+  const boss = bossAmong(report.fight.targets);
+  if (!boss) return report;
+  const died = report.fight.targets.some((t) => t.died && isBossTarget(boss, t));
+  return {
+    ...report,
+    fight: {
+      ...report.fight,
+      kind: "boss",
+      label: boss.name,
+      ...(boss.encounterId === null ? {} : { encounter: { id: boss.encounterId, name: boss.name, ...(died ? { success: true } : {}) } }),
+    },
+  };
+}
+
+function isBossTarget(boss: Boss, t: { npcId: number | null; name: string }) {
+  if (t.npcId !== null && boss.npcIds.includes(t.npcId)) return true;
+  return boss.unitNames.some((n) => n.toLowerCase() === t.name.toLowerCase());
+}
+
+/** Why a finished fight should not be uploaded, or null to upload it. Boss kills and wipes always upload. */
 export function skipReason(
   report: FightReport,
   settings: Pick<Settings, "autoUpload" | "minFightSeconds">,
@@ -128,7 +157,8 @@ export function skipReason(
 ): string | null {
   if (!settings.autoUpload) return "Auto-upload is off";
   if (!paired) return "Not paired with the site";
-  if (report.fight.kind === "trash" && report.fight.durationMs < settings.minFightSeconds * 1000) {
+  const boss = report.fight.kind === "boss" || bossAmong(report.fight.targets) !== null;
+  if (!boss && report.fight.durationMs < settings.minFightSeconds * 1000) {
     return `Shorter than ${settings.minFightSeconds} s`;
   }
   return null;

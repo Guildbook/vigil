@@ -311,10 +311,10 @@ export function warriorLog(opts: { start?: Date; tzHours?: number } = {}): strin
   tankFight(b, me, mob, 0, 24_000, 12_000, st);
   b.died(24_000, mob);
   st.rage = 95;
-  b.encounterStart(60_000, 1144, "Rhahk'Zor");
+  b.encounterStart(60_000, 2741, "Rhahk'Zor");
   tankFight(b, me, boss, 60_500, 30_000, null, st);
   b.died(90_500, boss);
-  b.encounterEnd(91_000, 1144, "Rhahk'Zor", true, 31_000);
+  b.encounterEnd(91_000, 2741, "Rhahk'Zor", true, 31_000);
   return b.text();
 }
 
@@ -398,5 +398,208 @@ export function raidLog(opts: { start?: Date; tzHours?: number } = {}): string {
   b.damage(26_000, rag, R.priest, 20565, "Magma Blast", 2600, { school: "0x4" });
   b.died(len, rag);
   b.encounterEnd(len + 200, 672, "Ragnaros", true, len);
+  return b.text();
+}
+
+export const PARTY = {
+  priest: raidMember("Sorrel", "0000D001"),
+  mage: raidMember("Vexa", "0000D002"),
+  rogue: raidMember("Kestrel", "0000D003"),
+  warlock: raidMember("Nyx", "0000D004"),
+};
+
+/** Party damage and healing on `target` from `start` for `length` ms (Rhune tanks it). */
+function partyFight(b: LogBuilder, target: Unit, start: number, length: number, st: TankState, stopAt = new Map<Unit, number>()) {
+  const P = PARTY;
+  tankFight(b, WARRIOR, target, start + 300, length - 300, null, st);
+  const dps: [Unit, number, string, number, number][] = [
+    [P.mage, 8406, "Frostbolt", 190, 2700],
+    [P.rogue, 1758, "Sinister Strike", 95, 1400],
+    [P.warlock, 1106, "Shadow Bolt", 175, 3000],
+  ];
+  for (const [unit, id, name, amount, every] of dps) {
+    for (let t = 600; t < length - 200 && start + t < (stopAt.get(unit) ?? Infinity); t += every) {
+      b.cast(start + t, unit, target, id, name);
+      b.damage(start + t + 20, unit, target, id, name, amount + ((t / every) % 3) * 12, { crit: (t / every) % 6 === 0 });
+    }
+  }
+  for (let t = 1500; t < length - 200 && start + t < (stopAt.get(P.priest) ?? Infinity); t += 2800) {
+    b.cast(start + t, P.priest, WARRIOR, 2055, "Heal");
+    b.heal(start + t + 20, P.priest, WARRIOR, 2055, "Heal", 310, 40);
+  }
+}
+
+/**
+ * The Deadmines with a level 21 party: Rhune tanks, Sorrel heals, Vexa, Kestrel and Nyx deal damage. Classic Era
+ * writes no ENCOUNTER_START in dungeons, so the bosses are known only by their units. A short trash pull, a quick
+ * Rhahk'Zor kill (under the 20 s trash cutoff), more trash, Mr. Smite, and Edwin VanCleef, whose Blackguards kill
+ * Vexa. The whole run takes about four minutes.
+ */
+export function deadminesLog(opts: { start?: Date; tzHours?: number } = {}): string {
+  const b = new LogBuilder(opts);
+  b.level = 21;
+  const me = WARRIOR;
+  const P = PARTY;
+  const st = { rage: 20 };
+  b.aura(-10_000, "APPLIED", me, me, 71, "Defensive Stance");
+  b.cast(-8000, P.priest, me, 1244, "Power Word: Fortitude");
+  b.aura(-8000, "APPLIED", P.priest, me, 1244, "Power Word: Fortitude");
+
+  const miner = mobUnit("Defias Miner", 598, 30);
+  partyFight(b, miner, 0, 12_000, st);
+  b.died(12_000, miner);
+
+  const rhahk = mobUnit("Rhahk'Zor", 644, 31);
+  st.rage = 30;
+  partyFight(b, rhahk, 30_000, 16_000, st);
+  for (const t of [34_000, 42_000]) b.damage(t, rhahk, me, 6304, "Rhahk'Zor Slam", 210);
+  b.died(46_000, rhahk);
+
+  const overseer = mobUnit("Defias Overseer", 634, 32);
+  st.rage = 20;
+  partyFight(b, overseer, 70_000, 14_000, st);
+  b.died(84_000, overseer);
+
+  const smite = mobUnit("Mr. Smite", 646, 33);
+  st.rage = 30;
+  partyFight(b, smite, 110_000, 38_000, st);
+  for (const t of [122_000, 136_000]) {
+    for (const [unit, amount] of [[me, 95], [P.rogue, 110]] as const) b.damage(t, smite, unit, 6432, "Smite Stomp", amount);
+    b.aura(t, "APPLIED", smite, P.rogue, 6432, "Smite Stomp", "DEBUFF");
+  }
+  for (const t of [128_000, 142_000]) b.damage(t, smite, me, 6435, "Smite Slam", 260);
+  b.died(148_000, smite);
+
+  const vancleef = mobUnit("Edwin VanCleef", 639, 34);
+  st.rage = 30;
+  partyFight(b, vancleef, 180_000, 42_000, st, new Map([[P.mage, 213_800]]));
+  b.cast(181_000, vancleef, null, 674, "Dual Wield");
+  for (const t of [186_000, 197_000, 209_000]) {
+    b.damage(t, vancleef, me, 3391, "Thrash", 140);
+    b.damage(t + 300, vancleef, me, 3391, "Thrash", 135);
+  }
+  b.cast(200_000, vancleef, null, 5200, "VanCleef's Allies");
+  const guards = [mobUnit("Defias Blackguard", 636, 35), mobUnit("Defias Blackguard", 636, 36)];
+  for (const [i, guard] of guards.entries()) {
+    for (let t = 201_000 + i * 400; t < 214_000; t += 1800) b.swing(t, guard, P.mage, 70 + i * 6);
+    b.swing(201_500 + i * 300, P.rogue, guard, 60);
+  }
+  b.died(213_800, P.mage);
+  for (const [i, guard] of guards.entries()) {
+    b.damage(215_000 + i * 900, P.warlock, guard, 1106, "Shadow Bolt", 190);
+    b.died(218_000 + i * 900, guard);
+  }
+  b.died(222_000, vancleef);
+  return b.text();
+}
+
+/**
+ * The Stockade with a level 26 party (same group as the Deadmines run), again without ENCOUNTER_START. Prisoner
+ * trash between the bosses; a quick Targorr kill (under the 20 s trash cutoff); Kam Deepfury; a wipe on Hamhock,
+ * pulled with two Defias Prisoners, then a clean kill after the run back; and Bazil Thredd, whose Smoke Bomb
+ * stuns the group. Battle Shout, Dual Wield and Bloodlust are casts that never hit a player. About five and a half
+ * minutes.
+ */
+export function stockadeLog(opts: { start?: Date; tzHours?: number } = {}): string {
+  const b = new LogBuilder(opts);
+  b.level = 26;
+  const me = WARRIOR;
+  const P = PARTY;
+  const st = { rage: 20 };
+  b.aura(-10_000, "APPLIED", me, me, 71, "Defensive Stance");
+  b.cast(-8000, P.priest, me, 1244, "Power Word: Fortitude");
+  b.aura(-8000, "APPLIED", P.priest, me, 1244, "Power Word: Fortitude");
+
+  const prisoner = mobUnit("Defias Prisoner", 1706, 40);
+  partyFight(b, prisoner, 0, 12_000, st);
+  b.cast(4000, prisoner, me, 6713, "Disarm");
+  b.aura(4000, "APPLIED", prisoner, me, 6713, "Disarm", "DEBUFF");
+  b.aura(9000, "REMOVED", prisoner, me, 6713, "Disarm", "DEBUFF");
+  b.died(12_000, prisoner);
+
+  const captive = mobUnit("Defias Captive", 1707, 41);
+  st.rage = 20;
+  partyFight(b, captive, 25_000, 13_000, st);
+  b.damage(30_000, captive, P.rogue, 7159, "Backstab", 120);
+  b.aura(31_000, "APPLIED", captive, me, 3427, "Infected Wound", "DEBUFF");
+  b.died(38_000, captive);
+
+  const targorr = mobUnit("Targorr the Dread", 1696, 42);
+  st.rage = 30;
+  partyFight(b, targorr, 55_000, 17_000, st);
+  b.cast(55_400, targorr, null, 674, "Dual Wield");
+  for (const t of [59_000, 65_500]) {
+    b.damage(t, targorr, me, 3391, "Thrash", 120);
+    b.damage(t + 250, targorr, me, 3391, "Thrash", 115);
+  }
+  b.cast(67_000, targorr, null, 8599, "Enrage");
+  b.aura(67_000, "APPLIED", targorr, targorr, 8599, "Enrage");
+  b.died(72_000, targorr);
+
+  const kam = mobUnit("Kam Deepfury", 1666, 43);
+  st.rage = 20;
+  partyFight(b, kam, 90_000, 30_000, st);
+  b.cast(90_500, kam, null, 7164, "Defensive Stance");
+  for (const t of [97_000, 109_000]) b.damage(t, kam, me, 8242, "Shield Slam", 150);
+  b.died(120_000, kam);
+
+  // Hamhock and two prisoners: the healer goes down first and the group follows.
+  const hamhock = mobUnit("Hamhock", 1717, 44);
+  const deaths = new Map<Unit, number>([[P.priest, 158_000], [P.mage, 160_000], [P.warlock, 161_500], [P.rogue, 163_000], [me, 164_000]]);
+  st.rage = 30;
+  partyFight(b, hamhock, 140_000, 24_000, st, deaths);
+  b.cast(141_000, hamhock, null, 6742, "Bloodlust");
+  b.aura(141_000, "APPLIED", hamhock, hamhock, 6742, "Bloodlust");
+  const adds = [mobUnit("Defias Prisoner", 1706, 45), mobUnit("Defias Prisoner", 1706, 46)];
+  for (const [i, add] of adds.entries()) {
+    for (let t = 142_000 + i * 500; t < 158_000; t += 1700) b.swing(t, add, P.priest, 65 + i * 5);
+  }
+  for (const t of [146_000, 153_000]) {
+    b.castStart(t - 2000, hamhock, 421, "Chain Lightning");
+    b.cast(t, hamhock, me, 421, "Chain Lightning");
+    for (const [unit, amount] of [[me, 160], [P.mage, 140], [P.warlock, 130]] as const) b.damage(t + 50, hamhock, unit, 421, "Chain Lightning", amount, { school: "0x8" });
+  }
+  b.castStart(157_800, hamhock, 421, "Chain Lightning");
+  b.cast(159_800, hamhock, P.mage, 421, "Chain Lightning");
+  for (const [unit, amount] of [[P.mage, 180], [P.warlock, 170], [P.rogue, 150]] as const) b.damage(159_850, hamhock, unit, 421, "Chain Lightning", amount, { school: "0x8" });
+  for (const t of [161_000, 162_600, 163_600]) b.swing(t, hamhock, t < 163_000 ? P.warlock : me, 160);
+  b.swing(162_800, adds[0]!, P.rogue, 90);
+  for (const [unit, t] of deaths) b.died(t, unit);
+
+  // After the run back: a clean Hamhock kill, with Chain Lightning interrupted once and Bloodlust dispelled.
+  st.rage = 30;
+  partyFight(b, hamhock, 215_000, 34_000, st);
+  b.cast(216_000, hamhock, null, 6742, "Bloodlust");
+  b.aura(216_000, "APPLIED", hamhock, hamhock, 6742, "Bloodlust");
+  b.aura(218_000, "REMOVED", hamhock, hamhock, 6742, "Bloodlust");
+  b.castStart(222_000, hamhock, 421, "Chain Lightning");
+  b.cast(222_400, P.rogue, hamhock, 1766, "Kick");
+  b.castStart(236_000, hamhock, 421, "Chain Lightning");
+  b.cast(238_000, hamhock, me, 421, "Chain Lightning");
+  for (const [unit, amount] of [[me, 150], [P.rogue, 135]] as const) b.damage(238_050, hamhock, unit, 421, "Chain Lightning", amount, { school: "0x8" });
+  b.died(249_000, hamhock);
+
+  const insurgent = mobUnit("Defias Insurgent", 1715, 47);
+  st.rage = 20;
+  partyFight(b, insurgent, 265_000, 13_000, st);
+  b.cast(265_500, insurgent, null, 9128, "Battle Shout");
+  b.cast(268_000, insurgent, null, 13730, "Demoralizing Shout");
+  b.aura(268_000, "APPLIED", insurgent, me, 13730, "Demoralizing Shout", "DEBUFF");
+  b.died(278_000, insurgent);
+
+  const bazil = mobUnit("Bazil Thredd", 1716, 48);
+  st.rage = 30;
+  partyFight(b, bazil, 295_000, 40_000, st);
+  b.cast(295_400, bazil, null, 674, "Dual Wield");
+  b.cast(297_000, bazil, null, 9128, "Battle Shout");
+  b.cast(318_000, bazil, null, 9128, "Battle Shout");
+  for (const t of [305_000, 324_000]) {
+    b.cast(t, bazil, me, 7964, "Smoke Bomb");
+    for (const unit of [me, P.rogue, P.priest]) {
+      b.aura(t + 20, "APPLIED", bazil, unit, 7964, "Smoke Bomb", "DEBUFF");
+      b.aura(t + 4020, "REMOVED", bazil, unit, 7964, "Smoke Bomb", "DEBUFF");
+    }
+  }
+  b.died(335_000, bazil);
   return b.text();
 }

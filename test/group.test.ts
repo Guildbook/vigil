@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CompanionEngine } from "../src/core/engine";
 import { factionFromClasses, GroupObserver, GroupReader, type GroupFightView } from "../src/core/group";
 import { SpellIcons } from "../src/core/media";
-import { raidLog, warriorLog } from "./support/combatlog";
+import { deadminesLog, raidLog, stockadeLog, warriorLog } from "./support/combatlog";
 
 const icons = new SpellIcons();
 
@@ -32,7 +32,16 @@ describe("GroupObserver on a Ragnaros kill", () => {
   it("recognises the encounter and its boss", () => {
     expect(finished).toHaveLength(1);
     expect(rag.encounter).toEqual({ id: 672, name: "Ragnaros", success: true });
-    expect(rag.boss).toEqual({ key: "ragnaros", name: "Ragnaros", raid: "Molten Core", displayId: 11121, status: "full" });
+    expect(rag.boss).toEqual({
+      key: "ragnaros",
+      name: "Ragnaros",
+      instance: "Molten Core",
+      instanceKind: "raid",
+      displayId: 11121,
+      status: "full",
+      via: "encounter",
+    });
+    expect(rag.result).toBe("kill");
     expect(rag.durationMs).toBe(60_200);
   });
 
@@ -86,6 +95,99 @@ describe("GroupObserver on a Ragnaros kill", () => {
   });
 });
 
+describe("GroupObserver on a Deadmines run without ENCOUNTER_START", () => {
+  const { finished } = observe(deadminesLog());
+  const fights = finished;
+
+  it("recognises dungeon bosses by their units and keeps trash apart", () => {
+    expect(fights.map((f) => [f.kind, f.label, f.boss?.key ?? null, f.result])).toEqual([
+      ["trash", "Defias Miner", null, null],
+      ["boss", "Rhahk'Zor", "rhahkzor", "kill"],
+      ["trash", "Defias Overseer", null, null],
+      ["boss", "Mr. Smite", "mr-smite", "kill"],
+      ["boss", "Edwin VanCleef", "edwin-vancleef", "kill"],
+    ]);
+    for (const f of fights.filter((x) => x.boss)) {
+      expect(f.encounter).toBeNull();
+      expect(f.boss).toMatchObject({ instance: "The Deadmines", instanceKind: "dungeon", via: "unit" });
+    }
+    expect(fights[1]!.durationMs).toBeLessThan(20_000);
+  });
+
+  it("links the bosses' abilities to the intel and counts the adds' kills", () => {
+    const smite = fights[3]!;
+    expect(smite.abilities.find((a) => a.name === "Smite Stomp")).toMatchObject({ spellId: 6432, hits: 4, players: 2 });
+    expect(smite.abilities.find((a) => a.name === "Smite Stomp")?.intelKey).toBe("smite-stomp");
+    const vancleef = fights[4]!;
+    expect(vancleef.deaths.map((d) => [d.name, d.blow?.source])).toEqual([["Vexa", "Defias Blackguard"]]);
+    expect(vancleef.abilities.find((a) => a.source === "Defias Blackguard")?.kills).toBe(1);
+    expect(vancleef.players).toHaveLength(5);
+    expect(vancleef.abilities.find((a) => a.name === "VanCleef's Allies")).toMatchObject({ intelKey: "vancleefs-allies", casts: 1, damage: 0 });
+  });
+
+  it("shows a unit-recognised boss while the fight is live", () => {
+    const text = deadminesLog();
+    const obs = new GroupObserver({ icons });
+    const reader = new GroupReader(2026);
+    let live: GroupFightView | null = null;
+    for (const line of text.split("\n")) {
+      const ev = reader.read(line);
+      if (!ev) continue;
+      obs.push(ev);
+      const now = obs.current(ev.t);
+      if (now?.boss?.key === "mr-smite") live = now;
+      if (live) break;
+    }
+    expect(live).toMatchObject({ live: true, kind: "boss", result: null, boss: { key: "mr-smite", via: "unit" } });
+  });
+});
+
+describe("GroupObserver on a Stockade run without ENCOUNTER_START", () => {
+  const { finished: fights } = observe(stockadeLog());
+
+  it("recognises every boss by unit, with kills, a wipe and the re-pull as separate fights", () => {
+    expect(fights.map((f) => [f.kind, f.label, f.boss?.key ?? null, f.result])).toEqual([
+      ["trash", "Defias Prisoner", null, null],
+      ["trash", "Defias Captive", null, null],
+      ["boss", "Targorr the Dread", "targorr-the-dread", "kill"],
+      ["boss", "Kam Deepfury", "kam-deepfury", "kill"],
+      ["boss", "Hamhock", "hamhock", "wipe"],
+      ["boss", "Hamhock", "hamhock", "kill"],
+      ["trash", "Defias Insurgent", null, null],
+      ["boss", "Bazil Thredd", "bazil-thredd", "kill"],
+    ]);
+    for (const f of fights.filter((x) => x.boss)) {
+      expect(f.encounter).toBeNull();
+      expect(f.boss).toMatchObject({ instance: "The Stockade", instanceKind: "dungeon", via: "unit", status: "full" });
+    }
+    expect(fights[2]!.durationMs).toBeLessThan(20_000);
+  });
+
+  it("records who died in the wipe and to what", () => {
+    const wipe = fights[4]!;
+    expect(wipe.deaths.map((d) => [d.name, d.blow?.source])).toEqual([
+      ["Sorrel", "Defias Prisoner"],
+      ["Vexa", "Hamhock"],
+      ["Nyx", "Hamhock"],
+      ["Kestrel", "Defias Prisoner"],
+      ["Rhune", "Hamhock"],
+    ]);
+    expect(wipe.abilities.find((a) => a.name === "Chain Lightning")).toMatchObject({ intelKey: "chain-lightning", hits: 9, players: 4 });
+  });
+
+  it("counts casts of listed abilities that never hit a player, once per cast", () => {
+    const bazil = fights[7]!;
+    const find = (name: string) => bazil.abilities.find((a) => a.name === name);
+    expect(find("Battle Shout")).toMatchObject({ intelKey: "battle-shout", casts: 2, damage: 0, debuffs: 0 });
+    expect(find("Dual Wield")).toMatchObject({ intelKey: "dual-wield", casts: 1 });
+    expect(find("Smoke Bomb")).toMatchObject({ intelKey: "smoke-bomb", casts: 2, debuffs: 6, players: 3 });
+    expect(fights[5]!.abilities.find((a) => a.name === "Bloodlust")).toMatchObject({ casts: 1 });
+    expect(fights[2]!.abilities.find((a) => a.name === "Enrage")).toMatchObject({ intelKey: "enrage", casts: 1 });
+    // Trash casts are not boss abilities.
+    expect(fights[6]!.abilities.find((a) => a.name === "Battle Shout")).toBeUndefined();
+  });
+});
+
 describe("GroupObserver on solo play", () => {
   it("splits trash pulls and encounters, and prefers the class the site knows", () => {
     const { finished } = observe(warriorLog(), (name) => (name === "Rhune" ? "mage" : null));
@@ -93,7 +195,8 @@ describe("GroupObserver on solo play", () => {
       ["trash", "Defias Pillager"],
       ["boss", "Rhahk'Zor"],
     ]);
-    expect(finished[1]!.boss).toBeNull();
+    expect(finished[1]!.boss).toMatchObject({ key: "rhahkzor", instance: "The Deadmines", instanceKind: "dungeon", via: "encounter" });
+    expect(finished[0]!.boss).toBeNull();
     expect(finished[1]!.players[0]!.wowClass).toBe("mage");
     expect(finished[0]!.faction).toBeNull();
   });

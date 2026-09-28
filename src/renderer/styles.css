@@ -854,6 +854,50 @@ body.compact .identity .cls {
   border-color: var(--gold);
   background: rgb(201 164 76 / 0.1);
 }
+.intel-search {
+  display: block;
+  width: 100%;
+  margin-bottom: 8px;
+}
+.seg.kinds {
+  display: flex;
+  width: 100%;
+  margin-bottom: 8px;
+}
+.seg.kinds button {
+  flex: 1;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 3px 7px;
+  font-size: 11px;
+  color: var(--bone);
+  background: rgb(11 9 8 / 0.35);
+}
+.chip small {
+  font-size: 10px;
+  color: var(--muted);
+}
+.chip.on {
+  border-color: var(--gold);
+  color: var(--gold-bright);
+  background: rgb(201 164 76 / 0.1);
+}
+.boss-row .where {
+  display: block;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted);
+}
 .boss-hero {
   display: flex;
   gap: 12px;

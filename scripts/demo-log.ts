@@ -1,17 +1,29 @@
 // Writes a synthetic combat log into a folder in real time, as the client would, so the companion can be
 // tried without the game: `pnpm demo:log /tmp/vigil-demo/Logs` and point the companion at that folder.
 // Rhune (Protection Warrior) fights a Defias Pillager, then Rhahk'Zor; the cycle repeats. DEMO_SCENARIO=raid
-// replays a Molten Core Ragnaros kill with an eight-player raid instead.
+// replays a Molten Core Ragnaros kill with an eight-player raid instead. DEMO_SCENARIO=stockade (or dungeon) is a
+// five-player Stockade run: prisoner trash, Targorr, Kam Deepfury, a wipe and a kill on Hamhock, and Bazil Thredd.
+// DEMO_SCENARIO=deadmines is Rhahk'Zor, Mr. Smite and Edwin VanCleef. Neither dungeon has ENCOUNTER_START lines,
+// as Classic Era writes dungeon logs.
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { raidLog, warriorLog } from "../test/support/combatlog";
+import { deadminesLog, raidLog, stockadeLog, warriorLog } from "../test/support/combatlog";
 
 const dir = path.resolve(process.argv[2] ?? "/tmp/vigil-demo/Logs");
 const speed = Number(process.env.DEMO_SPEED ?? 1);
 const cycles = Number(process.env.DEMO_CYCLES ?? 3);
 const LEAD_MS = 3_000;
-const raid = process.env.DEMO_SCENARIO === "raid";
-const CYCLE_MS = raid ? 80_000 : 110_000;
+const scenario = process.env.DEMO_SCENARIO ?? "solo";
+const stockade = { log: stockadeLog, cycleMs: 360_000 };
+const SCENARIOS = {
+  solo: { log: warriorLog, cycleMs: 110_000 },
+  raid: { log: raidLog, cycleMs: 80_000 },
+  stockade,
+  dungeon: stockade,
+  deadmines: { log: deadminesLog, cycleMs: 250_000 },
+};
+if (!(scenario in SCENARIOS)) throw new Error(`DEMO_SCENARIO must be one of ${Object.keys(SCENARIOS).join(", ")}`);
+const { log, cycleMs: CYCLE_MS } = SCENARIOS[scenario as keyof typeof SCENARIOS];
 
 mkdirSync(dir, { recursive: true });
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "_").slice(0, 15);
@@ -30,7 +42,7 @@ const wall0 = Date.now();
 const lines: { at: number; text: string }[] = [];
 for (let c = 0; c < cycles; c++) {
   const start = new Date(wall0 + LEAD_MS + c * CYCLE_MS);
-  const text = (raid ? raidLog : warriorLog)({ start, tzHours: 0 }).trimEnd().split("\n");
+  const text = log({ start, tzHours: 0 }).trimEnd().split("\n");
   // The header only belongs at the top of the file.
   for (const line of c === 0 ? text : text.slice(1)) lines.push({ at: lineTime(line), text: line });
 }

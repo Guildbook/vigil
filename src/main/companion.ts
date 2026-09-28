@@ -11,7 +11,7 @@ import { CompanionEngine, type EngineSnapshot } from "../core/engine";
 import { factionFromClasses, type GroupFightView } from "../core/group";
 import { SpellIcons } from "../core/media";
 import type { AppState, FightSummary, Identity, PairingState, Settings, UpdateState, UploadState } from "../core/protocol";
-import { skipReason, Uploader } from "../core/uploader";
+import { asBossFight, skipReason, Uploader } from "../core/uploader";
 import { discoverLogsCandidates, resolveLogsDir, wowRootCandidates, type LogsCandidate } from "../core/wow-paths";
 import { trustedSiteOrigin, type TrustConfig } from "../core/origins";
 import { loadPairing, loadSettings, loginItemsSupported, savePairing, saveSettings, TokenStore, trustConfig, type PairingRecord } from "./store";
@@ -140,13 +140,16 @@ export class Companion {
     this.push();
   }
 
-  /** The group fight recorded alongside an analysed fight: the same encounter, or a pull that began within 10 s. */
+  /**
+   * The group fight recorded alongside an analysed fight: the same logged encounter, or a pull that began within
+   * 10 s (dungeon bosses have no logged encounter, only the one asBossFight filled in).
+   */
   private groupFor(f: FightSummary): string | null {
     const start = Date.parse(f.startedAt);
     const taken = new Set(this.fights.map((x) => x.groupId).filter(Boolean));
     const match = this.groupFights.find((g) => {
       if (taken.has(g.id)) return false;
-      if (f.encounterId !== null) return g.encounter?.id === f.encounterId && Math.abs(g.startT - start) < 30_000;
+      if (f.encounterId !== null && g.encounter) return g.encounter.id === f.encounterId && Math.abs(g.startT - start) < 30_000;
       return g.encounter === null && Math.abs(g.startT - start) <= 10_000;
     });
     return match?.id ?? null;
@@ -162,7 +165,8 @@ export class Companion {
     return { name: player.name, level: player.level, wowClass, faction };
   }
 
-  private onFight({ report, callouts }: CompletedFight) {
+  private onFight({ report: analysed, callouts }: CompletedFight) {
+    const report = asBossFight(analysed);
     const id = `${Date.parse(report.fight.startedAt)}-${report.fight.label}`;
     const reason = skipReason(report, this.settings, Boolean(this.pairing && this.tokens.load() && !this.pairingError));
     const summary: FightSummary = {

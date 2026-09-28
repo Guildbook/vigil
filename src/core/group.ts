@@ -5,7 +5,7 @@ import { parseHeader, tokenizeLine, type LogHeader } from "@/lib/combatlog/token
 import type { CombatEvent, LogUnit } from "@/lib/combatlog/types";
 import type { Faction, WowClass } from "@/lib/game";
 import type { Boss } from "../data/bosses";
-import { bossForEncounter, bossForUnit, matchAbility, raidById } from "./intel";
+import { bossForEncounter, bossForUnit, instanceById, isEncounterUnit, matchAbility } from "./intel";
 import type { SpellIcons } from "./media";
 
 /**
@@ -14,8 +14,10 @@ import type { SpellIcons } from "./media";
  * player alone; this follows everyone in their party or raid.
  *
  * Fights are split like the analysis splits them: ENCOUNTER_START/END bound boss fights, anything else is a pull
- * that ends after a few seconds without a hostile exchange. Pets are not attributed to their owners (the Classic
- * log does not say whose they are).
+ * that ends after a few seconds without a hostile exchange. Classic Era only logs encounters in raids, so a pull
+ * that involves a known boss unit (dungeon bosses, or a raid log that started mid-fight) is shown as that boss's
+ * fight too, with the kill read from the boss dying. Pets are not attributed to their owners (the Classic log
+ * does not say whose they are).
  */
 
 /**
@@ -86,6 +88,8 @@ export interface GroupAbilityView {
   hits: number;
   /** Debuff applications on the group. */
   debuffs: number;
+  /** Casts and summons of a listed boss ability, for abilities that do not hit the group directly. */
+  casts: number;
   /** Players it hit or debuffed. */
   players: number;
   topTargets: { name: string; wowClass: WowClass | null; amount: number }[];
@@ -109,9 +113,21 @@ export interface GroupFightView {
   durationMs: number;
   live: boolean;
   label: string;
+  /** "boss" for an encounter, or a pull that involved a known boss unit. */
   kind: "boss" | "trash";
   encounter: { id: number; name: string; success?: boolean } | null;
-  boss: { key: string; name: string; raid: string; displayId: number | null; status: Boss["status"] } | null;
+  boss: {
+    key: string;
+    name: string;
+    instance: string;
+    instanceKind: "raid" | "dungeon";
+    displayId: number | null;
+    status: Boss["status"];
+    /** How the boss was recognised: the log's ENCOUNTER_START, or its NPC ID or name. */
+    via: "encounter" | "unit";
+  } | null;
+  /** Kill or wipe: from ENCOUNTER_END when logged, else the boss dying (kill) or the whole group dying (wipe). */
+  result: "kill" | "wipe" | null;
   faction: Faction | null;
   players: GroupPlayerView[];
   abilities: GroupAbilityView[];
@@ -142,6 +158,8 @@ interface AbilityAgg {
   damage: number;
   hits: number;
   debuffs: number;
+  casts: number;
+  lastCastT: number;
   targets: Map<string, number>;
   kills: number;
 }
@@ -153,6 +171,8 @@ interface Segment {
   kind: "boss" | "trash";
   encounter: GroupFightView["encounter"];
   boss: Boss | null;
+  /** Boss units (by GUID) seen in the fight, and whether each has died. */
+  bossUnits: Map<string, boolean>;
   players: Map<string, PlayerAgg>;
   abilities: Map<string, AbilityAgg>;
   deaths: { t: number; guid: string; name: string; blow: Hit | null }[];
@@ -228,8 +248,13 @@ export class GroupObserver {
     if (hostileExchange) s.lastT = ev.t;
 
     for (const unit of [src, dst]) {
-      if (!s.boss && unit && isHostileNpc(unit)) s.boss = bossForUnit(npcIdFromGuid(unit.guid), shortName(unit.name));
+      if (!unit || !isHostileNpc(unit)) continue;
+      const npcId = npcIdFromGuid(unit.guid);
+      const name = shortName(unit.name);
+      if (!s.boss) s.boss = bossForUnit(npcId, name);
+      if (s.boss && !s.bossUnits.has(unit.guid) && isBossUnit(s.boss, npcId, name)) s.bossUnits.set(unit.guid, false);
     }
+    if (ev.type === "UNIT_DIED" && dst && s.bossUnits.has(dst.guid)) s.bossUnits.set(dst.guid, true);
 
     if (isDamage(ev)) this.damage(s, ev);
     else if (ev.type === "ENVIRONMENTAL_DAMAGE" && isGroupPlayer(dst)) this.hitPlayer(s, ev, dst, "Environment");
@@ -242,6 +267,8 @@ export class GroupObserver {
       const a = this.ability(s, ev, shortName(src!.name));
       a.debuffs++;
       a.targets.set(dst.guid, a.targets.get(dst.guid) ?? 0);
+    } else if ((ev.type === "SPELL_CAST_SUCCESS" || ev.type === "SPELL_SUMMON") && s.boss && isHostileNpc(src) && ev.spellId) {
+      this.cast(s, ev, shortName(src!.name));
     } else if (ev.type === "UNIT_DIED" && isGroupPlayer(dst)) {
       const hit = this.lastHit.get(dst.guid);
       const blow = hit && ev.t - hit.t <= 10_000 ? hit : null;
@@ -280,6 +307,14 @@ export class GroupObserver {
     this.lastHit.set(dst.guid, { t: ev.t, spellId: a.spellId, name: a.name, amount, source });
   }
 
+  /** A listed boss ability cast or summoned; a cast and its summons (one event per unit) count once. */
+  private cast(s: Segment, ev: CombatEvent, source: string) {
+    if (!matchAbility(s.boss!, ev.spellId!, abilityName(ev))) return;
+    const a = this.ability(s, ev, source);
+    if (ev.t - a.lastCastT > 1000) a.casts++;
+    a.lastCastT = ev.t;
+  }
+
   private vote(guid: string, spellId: number) {
     const cls = this.opts.icons.classOf(spellId);
     if (!cls) return;
@@ -309,6 +344,7 @@ export class GroupObserver {
       kind,
       encounter: null,
       boss: null,
+      bossUnits: new Map(),
       players: new Map(),
       abilities: new Map(),
       deaths: [],
@@ -339,7 +375,7 @@ export class GroupObserver {
     const name = abilityName(ev);
     const key = abilityKey(spellId, name, source);
     let a = s.abilities.get(key);
-    if (!a) s.abilities.set(key, (a = { spellId, name, source, damage: 0, hits: 0, debuffs: 0, targets: new Map(), kills: 0 }));
+    if (!a) s.abilities.set(key, (a = { spellId, name, source, damage: 0, hits: 0, debuffs: 0, casts: 0, lastCastT: -Infinity, targets: new Map(), kills: 0 }));
     return a;
   }
 
@@ -395,6 +431,7 @@ export class GroupObserver {
         damage: a.damage,
         hits: a.hits,
         debuffs: a.debuffs,
+        casts: a.casts,
         players: a.targets.size,
         topTargets: [...a.targets.entries()]
           .sort((x, y) => y[1] - x[1])
@@ -403,19 +440,32 @@ export class GroupObserver {
         kills: a.kills,
         intelKey: boss ? (matchAbility(boss, a.spellId, a.name)?.key ?? null) : null,
       }))
-      .sort((a, b) => b.damage - a.damage || b.debuffs - a.debuffs)
+      .sort((a, b) => b.damage - a.damage || b.debuffs - a.debuffs || b.casts - a.casts)
       .slice(0, 24);
     const topEnemy = [...s.enemies.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
     const classes = players.map((p) => p.wowClass);
+    const instance = boss ? instanceById(boss.instance) : null;
     return {
       id: String(s.startT),
       startT: s.startT,
       durationMs,
       live,
       label: s.encounter?.name ?? boss?.name ?? (topEnemy ? `${topEnemy}${s.enemies.size > 1 ? ` +${s.enemies.size - 1}` : ""}` : "Unknown"),
-      kind: s.kind,
+      kind: boss ? "boss" : s.kind,
       encounter: s.encounter ? { ...s.encounter } : null,
-      boss: boss ? { key: boss.key, name: boss.name, raid: raidById(boss.raid).name, displayId: boss.displayId, status: boss.status } : null,
+      boss:
+        boss && instance
+          ? {
+              key: boss.key,
+              name: boss.name,
+              instance: instance.name,
+              instanceKind: instance.kind,
+              displayId: boss.displayId,
+              status: boss.status,
+              via: s.encounter && bossForEncounter(s.encounter.id) === boss ? "encounter" : "unit",
+            }
+          : null,
+      result: fightResult(s, players, live),
       faction: factionFromClasses(classes),
       players,
       abilities,
@@ -428,6 +478,22 @@ export class GroupObserver {
       })),
     };
   }
+}
+
+/** A unit that is the boss itself (not an add): by NPC ID, or by one of its unit names when the ID is unknown. */
+function isBossUnit(boss: Boss, npcId: number | null, name: string): boolean {
+  if (isEncounterUnit(boss, npcId)) return !boss.addNpcIds?.includes(npcId!);
+  return boss.unitNames.some((n) => n.toLowerCase() === name.toLowerCase());
+}
+
+function fightResult(s: Segment, players: GroupPlayerView[], live: boolean): GroupFightView["result"] {
+  if (s.encounter?.success === true) return "kill";
+  if (s.encounter?.success === false) return "wipe";
+  if (!s.boss) return null;
+  const units = [...s.bossUnits.values()];
+  if (units.length > 0 && units.every(Boolean)) return "kill";
+  const everyoneDied = players.length > 0 && players.every((p) => p.deaths > 0);
+  return !live && everyoneDied ? "wipe" : null;
 }
 
 function abilityKey(spellId: number | null, name: string, source: string) {

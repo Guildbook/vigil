@@ -52,8 +52,8 @@ Current builds are not code signed yet, so your operating system warns the first
 - **Live fight view.** Vigil tails `WoWCombatLog*.txt` as the game writes it and shows the current fight as it happens: score, damage, threat or healing per second, GCD use, idle time, buff and debuff uptimes and rotation callouts. The rotation model is picked from the spells you cast, or you can choose one.
 - **Encounter parsing.** Boss and trash fights are split out and scored when they end, with a per-fight summary in the window. **Details** on a finished fight shows your abilities, damage taken by each enemy ability and who it hit, the group meter and deaths.
 - **Group meter and deaths.** Damage and healing for everyone in your party or raid, with class icons worked out from the spells each player casts, and each death with its killing blow.
-- **Boss intel.** Molten Core and Onyxia's Lair are written up ability by ability: what each one does and what to do about it, with Blizzard's spell icons and boss portraits. During and after a known encounter, Vigil adds what it saw in your log (damage per ability, who got hit, deaths). **Intel** browses every raid; Blackwing Lair, Zul'Gurub, both Ahn'Qiraj raids and Naxxramas are recognised but not written up yet. Entries marked unconfirmed have not been checked against Classic Era data.
-- **Automatic uploads.** Each finished fight is uploaded to your guild's Guildbook site. Uploads run one at a time and retry with backoff if the site is busy or unreachable; a failed upload can be retried by hand. Trash fights shorter than a minimum length (20 seconds by default) are skipped, and you can turn auto-upload off or choose who can see your uploads.
+- **Boss intel.** Every Classic Era dungeon boss from Ragefire Chasm to Stratholme, plus Molten Core and Onyxia's Lair, is written up ability by ability: what each one does and what to do about it, with Blizzard's spell icons and boss portraits. Dungeon entries are shorter than raid ones, and bosses with only one or two abilities worth knowing are marked partial. During and after a boss fight, Vigil adds what it saw in your log (damage per ability, who got hit, how often the boss cast abilities that hit nobody, deaths, kill or wipe). Classic Era only logs `ENCOUNTER_START` in raids, so dungeon bosses are recognised by NPC ID or name instead. **Intel** browses dungeons (with level ranges) and raids, and searches bosses, instances and abilities; Blackwing Lair, Zul'Gurub, both Ahn'Qiraj raids and Naxxramas are recognised but not written up yet. Entries marked unconfirmed have not been checked against Classic Era data.
+- **Automatic uploads.** Each finished fight is uploaded to your guild's Guildbook site. Uploads run one at a time and retry with backoff if the site is busy or unreachable; a failed upload can be retried by hand. Trash fights shorter than a minimum length (20 seconds by default) are skipped; boss kills and wipes, dungeon bosses included, always upload, and you can turn auto-upload off or choose who can see your uploads.
 - **Second-screen friendly.** Full and compact layouts, and an option to keep the window on top.
 - **Tray icon.** Vigil lives in the menu bar on macOS and the system tray on Windows and Linux. The menu shows what Vigil is doing (watching a client's log, waiting for one, uploading, paused, or what needs attention) and your paired guild, and lets you open the window, pause and resume uploads, open the Logs folder or your guild's site, check for updates and quit. On Windows and Linux a click shows or hides the window. Closing the window keeps Vigil running in the tray so fights keep uploading; you can turn that off in settings, and on macOS and Windows you can have Vigil start when you log in.
 - **In-game addon.** Vigil can install its companion addon into any detected WoW client.
@@ -101,7 +101,7 @@ pnpm demo:log /tmp/vigil-demo/Logs                  # terminal 1
 VIGIL_LOGS_DIR=/tmp/vigil-demo/Logs pnpm dev         # terminal 2
 ```
 
-`DEMO_SCENARIO=raid pnpm demo:log ...` writes a 40-player Ragnaros kill instead of the solo warrior, which exercises the group meter, deaths and boss intel.
+`DEMO_SCENARIO=raid pnpm demo:log ...` writes a 40-player Ragnaros kill instead of the solo warrior, which exercises the group meter, deaths and boss intel. `DEMO_SCENARIO=stockade` (or `dungeon`) writes a five-player Stockade run: prisoner trash, Targorr the Dread, Kam Deepfury, a wipe and then a kill on Hamhock, and Bazil Thredd. It has no encounter events, as Classic Era logs dungeons, so it exercises boss recognition by unit, kill and wipe detection and the always-upload rule. `DEMO_SCENARIO=deadmines` does the same with Rhahk'Zor, Mr. Smite and Edwin VanCleef.
 
 Development-only variables: `VIGIL_SITE_URL` (the site to pair with, default `http://localhost:3000`), `VIGIL_LOGS_DIR` (Logs folder), `VIGIL_USER_DATA` (settings folder), `VIGIL_PAIR_CODE` (pair on launch), `VIGIL_CAPTURE_DIR` (save window PNGs every `VIGIL_CAPTURE_EVERY_MS`). Packaged builds ignore them.
 
@@ -113,7 +113,7 @@ The app is named Vigil (`src/core/identity.ts`, with `productName` in `package.j
 
 ```text
 src/core/        log tailer, live engine, group observer, boss lookup, media cache, uploader, WoW paths, addon install, trusted origins
-src/data/        boss intel (bosses.ts) and the generated spell icon map (spell-icons.json, boss-spells.json)
+src/data/        boss intel (bosses.ts for raids, dungeons/ one file per dungeon) and the generated spell icon map (spell-icons.json, boss-spells.json)
 src/main/        Electron main process, preload, settings store, auto-update
 src/renderer/    the window (HTML, CSS, TypeScript); icons/ holds bundled Blizzard class and faction icons
 shared/lib/      combat log parser and Vigil analysis, vendored from the Guildbook site
@@ -195,7 +195,7 @@ Class icons, spell icons and any other Blizzard artwork included in the app are 
 
 - `src/renderer/icons/classes/` and `src/renderer/icons/factions/` are copies of Blizzard's own class and faction icons from render.worldofwarcraft.com, bundled so they show without a network connection (see `src/renderer/icons/NOTICE`). `fallback.svg` there is Vigil's own and is AGPL.
 - Spell icons and boss portraits are not bundled; the app downloads them from render.worldofwarcraft.com and caches them for at most 30 days, in line with Blizzard's API terms.
-- The spell-to-icon map and spell names in `src/data/` are derived from Blizzard's game client data. The ability descriptions and advice in `src/data/bosses.ts` are Vigil's own writing.
+- The spell-to-icon map and spell names in `src/data/` are derived from Blizzard's game client data. Encounter IDs and dungeon level ranges come from the client's DungeonEncounter and LFGDungeons tables; NPC and creature display IDs were cross-checked against the open-source CMaNGOS Classic database. The ability descriptions and advice in `src/data/bosses.ts` and `src/data/dungeons/` are Vigil's own writing.
 - No art or text comes from Wowhead or other fan sites.
 
 ## Disclaimer

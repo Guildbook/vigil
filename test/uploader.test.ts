@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { analyzeText } from "@/lib/vigil/analyze";
 import type { UploadState } from "../src/core/protocol";
-import { skipReason, Uploader, type UploadTarget } from "../src/core/uploader";
-import { PALADIN, paladinLog } from "./support/combatlog";
+import { asBossFight, skipReason, Uploader, type UploadTarget } from "../src/core/uploader";
+import { deadminesLog, PALADIN, paladinLog, stockadeLog, WARRIOR } from "./support/combatlog";
 
 const [boar] = analyzeText(paladinLog(), PALADIN.guid, "paladin-leveling", "Tor");
 const target: UploadTarget = { apiUrl: "http://site.test/", token: "osmv_abc", guild: "osm", visibility: null };
@@ -95,5 +95,81 @@ describe("skipReason", () => {
     expect(skipReason(boss, { ...settings, minFightSeconds: 60 }, true)).toBeNull();
     expect(skipReason(boar!, { ...settings, autoUpload: false }, true)).toBe("Auto-upload is off");
     expect(skipReason(boar!, settings, false)).toBe("Not paired with the site");
+  });
+});
+
+describe("dungeon bosses without ENCOUNTER_START", () => {
+  const reports = analyzeText(deadminesLog(), WARRIOR.guid, "protection-warrior", "Rhune");
+  const settings = { autoUpload: true, minFightSeconds: 20 };
+  const byLabel = (label: string) => reports.find((r) => r.fight.label === label)!;
+
+  it("are analysed as trash, since the log has no encounter", () => {
+    expect(reports.map((r) => [r.fight.kind, r.fight.label])).toEqual([
+      ["trash", "Defias Miner"],
+      ["trash", "Rhahk'Zor"],
+      ["trash", "Defias Overseer"],
+      ["trash", "Mr. Smite"],
+      ["trash", "Edwin VanCleef"],
+    ]);
+  });
+
+  it("become boss fights with the client's encounter ID, and a kill when the boss died", () => {
+    const rhahk = asBossFight(byLabel("Rhahk'Zor"));
+    expect(rhahk.fight).toMatchObject({ kind: "boss", label: "Rhahk'Zor", encounter: { id: 2741, name: "Rhahk'Zor", success: true } });
+    const vancleef = asBossFight(byLabel("Edwin VanCleef"));
+    expect(vancleef.fight).toMatchObject({ kind: "boss", label: "Edwin VanCleef", encounter: { id: 2747, success: true } });
+    const wipe = { ...byLabel("Mr. Smite"), fight: { ...byLabel("Mr. Smite").fight, targets: byLabel("Mr. Smite").fight.targets.map((t) => ({ ...t, died: false })) } };
+    expect(asBossFight(wipe).fight.encounter).toEqual({ id: 2745, name: "Mr. Smite" });
+    const trash = byLabel("Defias Miner");
+    expect(asBossFight(trash)).toBe(trash);
+  });
+
+  it("always upload, however short, while short trash is skipped", () => {
+    const rhahk = byLabel("Rhahk'Zor");
+    expect(rhahk.fight.durationMs).toBeLessThan(20_000);
+    expect(skipReason(rhahk, settings, true)).toBeNull();
+    expect(skipReason(asBossFight(rhahk), { ...settings, minFightSeconds: 600 }, true)).toBeNull();
+    expect(skipReason(byLabel("Defias Miner"), settings, true)).toBe("Shorter than 20 s");
+    expect(skipReason(byLabel("Defias Overseer"), settings, true)).toBe("Shorter than 20 s");
+  });
+});
+
+describe("a Stockade run without ENCOUNTER_START", () => {
+  const reports = analyzeText(stockadeLog(), WARRIOR.guid, "protection-warrior", "Rhune").map(asBossFight);
+  const settings = { autoUpload: true, minFightSeconds: 20 };
+
+  it("files each boss pull with its encounter, as a kill or (for the wipe) without success", () => {
+    expect(reports.map((r) => [r.fight.kind, r.fight.label, r.fight.encounter ?? null])).toEqual([
+      ["trash", "Defias Prisoner", null],
+      ["trash", "Defias Captive", null],
+      ["boss", "Targorr the Dread", { id: 2756, name: "Targorr the Dread", success: true }],
+      ["boss", "Kam Deepfury", { id: 2757, name: "Kam Deepfury", success: true }],
+      ["boss", "Hamhock", { id: 2758, name: "Hamhock" }],
+      ["boss", "Hamhock", { id: 2758, name: "Hamhock", success: true }],
+      ["trash", "Defias Insurgent", null],
+      ["boss", "Bazil Thredd", { id: 2760, name: "Bazil Thredd", success: true }],
+    ]);
+  });
+
+  it("uploads every boss pull, kill or wipe, and skips the short trash", () => {
+    expect(reports.map((r) => [r.fight.label, skipReason(r, settings, true)])).toEqual([
+      ["Defias Prisoner", "Shorter than 20 s"],
+      ["Defias Captive", "Shorter than 20 s"],
+      ["Targorr the Dread", null],
+      ["Kam Deepfury", null],
+      ["Hamhock", null],
+      ["Hamhock", null],
+      ["Defias Insurgent", "Shorter than 20 s"],
+      ["Bazil Thredd", null],
+    ]);
+  });
+
+  it("relabels a rare elite as a boss fight without an encounter", () => {
+    const bazil = analyzeText(stockadeLog(), WARRIOR.guid, "protection-warrior", "Rhune").at(-1)!;
+    const rare = { ...bazil, fight: { ...bazil.fight, label: "Bruegal Ironknuckle", targets: [{ ...bazil.fight.targets[0]!, npcId: 1720, name: "Bruegal Ironknuckle" }] } };
+    const promoted = asBossFight(rare);
+    expect(promoted.fight).toMatchObject({ kind: "boss", label: "Bruegal Ironknuckle" });
+    expect(promoted.fight.encounter).toBeUndefined();
+    expect(skipReason({ ...promoted, fight: { ...promoted.fight, durationMs: 5000 } }, settings, true)).toBeNull();
   });
 });

@@ -1,8 +1,8 @@
 import { CLASS_INFO, FACTION_LABELS, type Faction, type WowClass } from "@/lib/game";
 import type { Callout, LiveFight } from "@/lib/vigil/live";
-import type { Boss, BossAbility, RaidId } from "../data/bosses";
+import type { Boss, BossAbility, Instance } from "../data/bosses";
 import type { GroupAbilityView, GroupFightView, GroupPlayerView } from "../core/group";
-import { bossByKey, bossesByRaid } from "../core/intel";
+import { bossByKey, bossesByInstance, instanceById, searchBosses, type InstanceGroup } from "../core/intel";
 import type { AppState, CompanionBridge, FightSummary, Identity, Settings } from "../core/protocol";
 
 declare global {
@@ -16,8 +16,11 @@ const root = document.getElementById("app")!;
 
 let state: AppState | null = null;
 let view: "live" | "settings" | "intel" | "fight" = "live";
-let intelRaid: RaidId = "mc";
+let intelKind: Instance["kind"] = "dungeon";
+/** The instance open in each Intel tab. */
+const intelInstance: Record<Instance["kind"], string> = { dungeon: "deadmines", raid: "mc" };
 let intelBoss: string | null = null;
+let intelQuery = "";
 /** The fight open in the detail view: a FightSummary id, or a group fight id when there is no summary. */
 let detailId: string | null = null;
 let meter: "damage" | "healing" = "damage";
@@ -172,7 +175,7 @@ function renderCurrent(s: AppState) {
         ${boss ? portrait(boss.displayId, compact ? 34 : 46) : ""}
         <div class="who">
           <div class="target" title="${esc(f.targets.join(", "))}">${esc(f.label)}</div>
-          <div class="sub">${f.kind === "boss" ? `<span class="pill boss">Boss</span> ` : ""}${clock(f.elapsedMs)}${esc(others)}</div>
+          <div class="sub">${f.kind === "boss" || boss ? `<span class="pill boss">Boss</span> ` : ""}${boss ? `${esc(boss.instance)}, ` : ""}${clock(f.elapsedMs)}${esc(others)}</div>
         </div>
         <div class="score ${tone(f.score)}">${Math.round(f.score)}<small>score</small></div>
       </div>
@@ -225,7 +228,7 @@ function renderFights(s: AppState) {
         <div class="fscore ${tone(f.score)}">${Math.round(f.score)}</div>
         ${g?.boss ? portrait(g.boss.displayId, 30) : ""}
         <div class="meta">
-          <div class="name">${f.kind === "boss" ? `<span class="pill boss">Boss</span> ` : ""}${esc(f.label)}</div>
+          <div class="name">${f.kind === "boss" || g?.boss ? `<span class="pill boss">Boss</span> ` : ""}${esc(f.label)}${resultPill(g?.result ?? null)}</div>
           <div class="detail">${clock(f.durationMs)}, ${pct(f.gcdUsage)} GCD, ${num(f.perSecond)} ${metricUnit(f.metric)}${f.modelLabel ? `, ${esc(f.modelLabel)}` : ""}${
             g?.deaths.length ? `, ${g.deaths.length} ${g.deaths.length === 1 ? "death" : "deaths"}` : ""
           }</div>
@@ -330,6 +333,7 @@ function observedFor(g: GroupFightView | null, key: string) {
     players: Math.max(...rows.map((a) => a.players)),
     kills: rows.reduce((n, a) => n + a.kills, 0),
     debuffs: rows.reduce((n, a) => n + a.debuffs, 0),
+    casts: rows.reduce((n, a) => n + a.casts, 0),
   };
 }
 
@@ -338,7 +342,8 @@ function observedLine(o: ReturnType<typeof observedFor>) {
   const parts = [
     o.damage ? `${num(o.damage)} damage` : "",
     o.debuffs ? `${o.debuffs} ${o.debuffs === 1 ? "application" : "applications"}` : "",
-    `${o.players} ${o.players === 1 ? "player" : "players"}`,
+    o.players ? `${o.players} ${o.players === 1 ? "player" : "players"}` : "",
+    o.casts && !o.damage && !o.debuffs ? `cast ${o.casts === 1 ? "once" : `${o.casts} times`}` : "",
     o.kills ? `${o.kills} ${o.kills === 1 ? "death" : "deaths"}` : "",
   ].filter(Boolean);
   return `<span class="observed ${o.kills ? "bad" : ""}">${parts.join(", ")}</span>`;
@@ -359,9 +364,20 @@ function renderAbility(a: BossAbility, g: GroupFightView | null, full: boolean) 
     </li>`;
 }
 
+function resultPill(result: GroupFightView["result"]) {
+  return result ? ` <span class="pill ${result === "kill" ? "up" : "down"}">${result === "kill" ? "Kill" : "Wipe"}</span>` : "";
+}
+
 function renderLiveIntel(g: GroupFightView | null) {
   const boss = g?.boss ? bossByKey(g.boss.key) : null;
-  if (!boss || boss.status !== "full") return "";
+  if (!boss || (!boss.abilities.length && boss.status !== "full")) return "";
+  if (!boss.abilities.length) {
+    return `
+    <section class="panel">
+      <div class="panel-head"><h2>Boss intel</h2><span class="grow"></span><button class="link" data-intel="${esc(boss.key)}">All about ${esc(boss.name)}</button></div>
+      <p class="asum">${esc(boss.summary)}</p>
+    </section>`;
+  }
   return `
     <section class="panel">
       <div class="panel-head"><h2>Boss intel</h2><span class="grow"></span><button class="link" data-intel="${esc(boss.key)}">All about ${esc(boss.name)}</button></div>
@@ -422,14 +438,14 @@ function renderFightDetail(s: AppState) {
   const g = (f?.groupId ? s.groupFights.find((x) => x.id === f.groupId) : s.groupFights.find((x) => x.id === detailId)) ?? null;
   if (!f && !g) return `<section class="panel"><p class="empty">This fight is no longer in memory.</p></section>`;
   const boss = g?.boss ? bossByKey(g.boss.key) : null;
-  const result = g?.encounter?.success === true ? "Kill" : g?.encounter?.success === false ? "Wipe" : null;
+  const result = g?.result === "kill" ? "Kill" : g?.result === "wipe" ? "Wipe" : null;
   const head = `
     <section class="panel">
       <div class="fight-head">
         ${boss ? portrait(boss.displayId, 56) : ""}
         <div class="who">
           <div class="target">${esc(f?.label ?? g!.label)}</div>
-          <div class="sub">${boss ? `${esc(g!.boss!.raid)}, ` : ""}${clock(f?.durationMs ?? g!.durationMs)}${result ? `, ${result}` : ""}${
+          <div class="sub">${boss ? `${esc(g!.boss!.instance)}, ` : ""}${clock(f?.durationMs ?? g!.durationMs)}${result ? `, ${result}` : ""}${
             g ? `, ${g.players.length} ${g.players.length === 1 ? "player" : "players"}` : ""
           }</div>
         </div>
@@ -439,7 +455,7 @@ function renderFightDetail(s: AppState) {
     </section>`;
   if (!g) return head + `<section class="panel"><p class="empty">No group data was recorded for this fight.</p></section>`;
   const intel =
-    boss && boss.status === "full"
+    boss && boss.abilities.length
       ? `<section class="panel"><div class="panel-head"><h2>Boss intel</h2><span class="grow"></span><button class="link" data-intel="${esc(boss.key)}">Open in Intel</button></div><ul class="abilities">${boss.abilities
           .map((a) => renderAbility(a, g, false))
           .join("")}</ul></section>`
@@ -449,32 +465,62 @@ function renderFightDetail(s: AppState) {
 
 /* Browsable intel. */
 
-function renderIntel(s: AppState) {
-  const groups = bossesByRaid();
-  const tabs = groups
-    .map(({ raid }) => `<button class="${raid.id === intelRaid ? "on" : ""}" data-raid="${raid.id}" title="${esc(raid.name)}">${esc(raid.short)}</button>`)
-    .join("");
-  const current = groups.find((x) => x.raid.id === intelRaid)!;
-  const boss = intelBoss ? bossByKey(intelBoss) : null;
-  const list = current.bosses
-    .map(
-      (b: Boss) => `
+function instanceMeta(i: Instance) {
+  return i.levels ? `Levels ${i.levels[0]}-${i.levels[1]}, ${i.size}-player` : `${i.size}-player`;
+}
+
+function bossRow(b: Boss, open: Boss | null, where = false) {
+  return `
       <li>
-        <button class="boss-row ${boss?.key === b.key ? "on" : ""}" data-boss="${esc(b.key)}">
+        <button class="boss-row ${open?.key === b.key ? "on" : ""}" data-boss="${esc(b.key)}">
           ${portrait(b.displayId, 32)}
-          <span class="grow">${esc(b.name)}</span>
-          ${b.status === "scaffold" ? `<span class="pill">Soon</span>` : `<span class="pill tag">${b.abilities.length} abilities</span>`}
+          <span class="grow">${esc(b.name)}${where ? `<span class="where">${esc(instanceById(b.instance).name)}</span>` : ""}</span>
+          ${b.rare ? `<span class="pill">Rare</span>` : ""}
+          ${
+            b.status === "scaffold"
+              ? `<span class="pill">Soon</span>`
+              : b.abilities.length
+                ? `<span class="pill tag">${b.abilities.length} ${b.abilities.length === 1 ? "ability" : "abilities"}</span>`
+                : `<span class="pill tag">Melee only</span>`
+          }
         </button>
-      </li>`,
-    )
-    .join("");
+      </li>`;
+}
+
+function bossList(g: InstanceGroup, open: Boss | null) {
+  return `<h3 class="sub-h">${esc(g.instance.name)} <span class="muted small">${instanceMeta(g.instance)}</span></h3>
+      <ul class="boss-list">${g.bosses.map((b) => bossRow(b, open)).join("")}</ul>`;
+}
+
+function renderIntel(s: AppState) {
+  const boss = intelBoss ? bossByKey(intelBoss) : null;
+  const query = intelQuery.trim();
+  let body: string;
+  if (query) {
+    const found = searchBosses(query);
+    body = found.length ? found.map((g) => bossList(g, boss)).join("") : `<p class="empty">No boss, dungeon or ability matches "${esc(query)}".</p>`;
+  } else {
+    const groups = bossesByInstance(intelKind);
+    const current = groups.find((g) => g.instance.id === intelInstance[intelKind]) ?? groups[0]!;
+    const kinds = (["dungeon", "raid"] as const)
+      .map((k) => `<button class="${k === intelKind ? "on" : ""}" data-kind="${k}">${k === "dungeon" ? "Dungeons" : "Raids"}</button>`)
+      .join("");
+    const chips = groups
+      .map(
+        ({ instance: i }) =>
+          `<button class="chip ${i.id === current.instance.id ? "on" : ""}" data-instance="${esc(i.id)}" title="${esc(i.name)}">${esc(i.short)}${
+            i.levels ? `<small>${i.levels[0]}-${i.levels[1]}</small>` : ""
+          }</button>`,
+      )
+      .join("");
+    body = `<div class="seg kinds">${kinds}</div><div class="chips">${chips}</div>${bossList(current, boss)}`;
+  }
   const detail = boss ? renderBossDetail(s, boss) : "";
   return `
     <section class="panel">
-      <div class="panel-head"><h2>Boss intel</h2><span class="grow"></span><span class="muted small">${current.raid.size}-player</span></div>
-      <div class="seg tabs">${tabs}</div>
-      <h3 class="sub-h">${esc(current.raid.name)}</h3>
-      <ul class="boss-list">${list}</ul>
+      <div class="panel-head"><h2>Boss intel</h2></div>
+      <input id="intel-search" class="intel-search" type="search" value="${esc(intelQuery)}" placeholder="Search bosses, dungeons or abilities" spellcheck="false" autocomplete="off" />
+      ${body}
     </section>
     ${detail}
     <p class="note center">Spell data from Blizzard's World of Warcraft Classic Era client; icons and portraits from Blizzard. World of Warcraft is a trademark of Blizzard Entertainment. Vigil is not affiliated with Blizzard.</p>`;
@@ -482,12 +528,15 @@ function renderIntel(s: AppState) {
 
 function renderBossDetail(s: AppState, boss: Boss) {
   const last = s.groupFights.find((g) => g.boss?.key === boss.key) ?? (s.engine?.group?.boss?.key === boss.key ? s.engine.group : null);
+  const instance = instanceById(boss.instance);
   const abilities = boss.abilities.length
     ? `<ul class="abilities">${boss.abilities.map((a) => renderAbility(a, last, true)).join("")}</ul>`
-    : `<p class="empty">Abilities for this encounter are not written up yet. Vigil still recognises the fight and lists what hit the group.</p>`;
+    : boss.status === "full"
+      ? `<p class="empty">No special abilities: this fight is plain melee.</p>`
+      : `<p class="empty">Abilities for this encounter are not written up yet. Vigil still recognises the fight and lists what hit the group.</p>`;
   const lastLine = last
     ? `<p class="note">Observed numbers are from your last ${esc(boss.name)} fight (${clock(last.durationMs)}${
-        last.encounter?.success === true ? ", kill" : last.encounter?.success === false ? ", wipe" : ""
+        last.result === "kill" ? ", kill" : last.result === "wipe" ? ", wipe" : ""
       }). <button class="link" data-group="${esc(last.id)}">Open that fight</button></p>`
     : "";
   return `
@@ -496,8 +545,10 @@ function renderBossDetail(s: AppState, boss: Boss) {
         ${portrait(boss.displayId, 120, "zoom")}
         <div class="grow">
           <div class="target">${esc(boss.name)}</div>
-          <div class="sub">Encounter ${boss.encounterId}${boss.npcIds.length ? `, NPC ${boss.npcIds.join(", ")}` : ""}</div>
+          <div class="sub">${esc(instance.name)}, ${instanceMeta(instance)}</div>
+          <div class="sub">${[boss.rare ? "Rare spawn" : "", boss.encounterId !== null ? `Encounter ${boss.encounterId}` : "", boss.npcIds.length ? `NPC ${boss.npcIds.join(", ")}` : ""].filter(Boolean).join(", ")}</div>
           <p class="asum">${esc(boss.summary)}</p>
+          ${boss.uncertain ? `<p class="uncertain">Unconfirmed: ${esc(boss.uncertain)}</p>` : ""}
         </div>
       </div>
       ${lastLine}
@@ -650,14 +701,21 @@ root.addEventListener("click", async (e) => {
   if (el.dataset.intel) {
     const boss = bossByKey(el.dataset.intel);
     if (boss) {
-      intelRaid = boss.raid;
+      intelKind = instanceById(boss.instance).kind;
+      intelInstance[intelKind] = boss.instance;
       intelBoss = boss.key;
+      intelQuery = "";
     }
     view = "intel";
     return render();
   }
-  if (el.dataset.raid) {
-    intelRaid = el.dataset.raid as RaidId;
+  if (el.dataset.kind) {
+    intelKind = el.dataset.kind as Instance["kind"];
+    intelBoss = null;
+    return render();
+  }
+  if (el.dataset.instance) {
+    intelInstance[intelKind] = el.dataset.instance;
     intelBoss = null;
     return render();
   }
@@ -715,6 +773,18 @@ root.addEventListener("click", async (e) => {
       return;
   }
   render();
+});
+
+/** Search re-renders the Intel view as you type; the new input keeps focus and the caret. */
+root.addEventListener("input", (e) => {
+  const el = e.target as HTMLInputElement;
+  if (el.id !== "intel-search") return;
+  intelQuery = el.value;
+  const caret = el.selectionStart;
+  render();
+  const next = document.getElementById("intel-search") as HTMLInputElement | null;
+  next?.focus();
+  if (next && caret !== null) next.setSelectionRange(caret, caret);
 });
 
 root.addEventListener("change", async (e) => {

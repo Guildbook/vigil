@@ -1,21 +1,27 @@
+import { DUNGEON_BOSSES, DUNGEONS } from "./dungeons";
+
 /**
- * Boss intel for the WoW: Forever raids (Classic Era content).
+ * Boss intel for WoW: Forever (Classic Era content): the raids here, the 5-player dungeons in ./dungeons/.
  *
  * Sources, and how sure each field is:
  * - `encounterId`: the ID in ENCOUNTER_START / ENCOUNTER_END, from Blizzard's Classic Era client table
- *   DungeonEncounter (build 1.15.9). Verified for every boss here.
- * - `displayId`: the creature display used for the portrait, from the retail Encounter Journal
+ *   DungeonEncounter (build 1.15.9). Verified for every boss, raids and dungeons. Classic Era only fires the
+ *   events in raids, so dungeon bosses are recognised by NPC ID or name; the IDs are kept for when they do fire.
+ * - `displayId`: the creature display used for the portrait. Raids: the retail Encounter Journal
  *   (JournalEncounterCreature), which still covers these raids. Verified for Molten Core, Onyxia, Blackwing Lair
  *   and Ahn'Qiraj. Naxxramas uses the Wrath of the Lich King version's models; Zul'Gurub has none (the journal only
- *   knows the Cataclysm remake).
- * - `npcIds`: the NPC ID in creature GUIDs. Not in any client table we can read, so these come from reference
- *   knowledge; `npcIdsVerified: false` marks them. Names are matched too, so a wrong ID never hides a boss.
+ *   knows the Cataclysm remake). Dungeons: the NPC's model in the CMaNGOS Classic database, checked against the
+ *   client's CreatureDisplayInfo table and Blizzard's render CDN (null where the CDN has no render).
+ * - `npcIds`: the NPC ID in creature GUIDs. Not in any client table we can read. Raids: reference knowledge.
+ *   Dungeons: the CMaNGOS Classic database, where the NPC spawns (or is summoned) in that instance. Either way
+ *   `npcIdsVerified: false` marks them, and names are matched too, so a wrong ID never hides a boss.
  * - Ability `spellIds`: Classic Era spell IDs, checked against the client's SpellName table (the generated
- *   src/data/boss-spells.json holds the client name for each, and a test compares them). Descriptions and advice
- *   are our own words. `uncertain` flags details we could not confirm.
+ *   src/data/boss-spells.json holds the client name for each, and a test compares them). For dungeons, the spells
+ *   each boss casts come from the CMaNGOS Classic creature scripts. Descriptions and advice are our own words.
+ *   `uncertain` flags details we could not confirm.
  */
 
-export type RaidId = "mc" | "onyxia" | "bwl" | "zg" | "aq20" | "aq40" | "naxx";
+export type InstanceId = string;
 
 export type AbilityTag =
   | "tank"
@@ -51,8 +57,13 @@ export interface BossAbility {
 export interface Boss {
   key: string;
   name: string;
-  raid: RaidId;
-  encounterId: number;
+  instance: InstanceId;
+  /** Null for rare elites and other fights without a DungeonEncounter row; they are recognised by unit only. */
+  encounterId: number | null;
+  /** A rare elite that only sometimes spawns (e.g. Bruegal Ironknuckle in the Stockade). */
+  rare?: boolean;
+  /** Other DungeonEncounter IDs for the same fight (Blackfathom Deeps has two sets for its 5-player version). */
+  altEncounterIds?: number[];
   npcIds: number[];
   /** Adds that belong to the fight (their damage counts toward the encounter's observed abilities). */
   addNpcIds?: number[];
@@ -62,34 +73,46 @@ export interface Boss {
   displayId: number | null;
   summary: string;
   abilities: BossAbility[];
-  /** "full" has researched abilities; "scaffold" only identifies the encounter so far. */
-  status: "full" | "scaffold";
+  /**
+   * "full" covers every scripted ability worth knowing (raid bosses have at least three; a small dungeon kit like
+   * Hamhock's can be complete with two, and a melee-only rare with none); "partial" (dungeons) recognises the fight
+   * and lists one or two key abilities with more left to write; "scaffold" only identifies the encounter so far.
+   */
+  status: "full" | "partial" | "scaffold";
+  /** Something about the boss itself we could not confirm (shown as Unconfirmed). */
+  uncertain?: string;
 }
 
-export interface Raid {
-  id: RaidId;
+export interface Instance {
+  id: InstanceId;
   name: string;
   short: string;
-  /** Instance map ID (DungeonEncounter.MapID). */
+  kind: "raid" | "dungeon";
+  /** Instance map ID (DungeonEncounter.MapID). Wings of one dungeon share it. */
   mapId: number;
-  size: 20 | 40;
+  size: 5 | 10 | 20 | 40;
+  /** Suggested levels, from the client's LFGDungeons table (dungeons only). */
+  levels?: [min: number, max: number];
 }
 
-export const RAIDS: Raid[] = [
-  { id: "mc", name: "Molten Core", short: "MC", mapId: 409, size: 40 },
-  { id: "onyxia", name: "Onyxia's Lair", short: "Onyxia", mapId: 249, size: 40 },
-  { id: "bwl", name: "Blackwing Lair", short: "BWL", mapId: 469, size: 40 },
-  { id: "zg", name: "Zul'Gurub", short: "ZG", mapId: 309, size: 20 },
-  { id: "aq20", name: "Ruins of Ahn'Qiraj", short: "AQ20", mapId: 509, size: 20 },
-  { id: "aq40", name: "Temple of Ahn'Qiraj", short: "AQ40", mapId: 531, size: 40 },
-  { id: "naxx", name: "Naxxramas", short: "Naxx", mapId: 533, size: 40 },
+export const RAIDS: Instance[] = [
+  { id: "mc", name: "Molten Core", short: "MC", kind: "raid", mapId: 409, size: 40 },
+  { id: "onyxia", name: "Onyxia's Lair", short: "Onyxia", kind: "raid", mapId: 249, size: 40 },
+  { id: "bwl", name: "Blackwing Lair", short: "BWL", kind: "raid", mapId: 469, size: 40 },
+  { id: "zg", name: "Zul'Gurub", short: "ZG", kind: "raid", mapId: 309, size: 20 },
+  { id: "aq20", name: "Ruins of Ahn'Qiraj", short: "AQ20", kind: "raid", mapId: 509, size: 20 },
+  { id: "aq40", name: "Temple of Ahn'Qiraj", short: "AQ40", kind: "raid", mapId: 531, size: 40 },
+  { id: "naxx", name: "Naxxramas", short: "Naxx", kind: "raid", mapId: 533, size: 40 },
 ];
+
+export { DUNGEONS };
+export const INSTANCES: Instance[] = [...DUNGEONS, ...RAIDS];
 
 const MOLTEN_CORE: Boss[] = [
   {
     key: "lucifron",
     name: "Lucifron",
-    raid: "mc",
+    instance: "mc",
     encounterId: 663,
     npcIds: [12118],
     addNpcIds: [12119],
@@ -138,7 +161,7 @@ const MOLTEN_CORE: Boss[] = [
   {
     key: "magmadar",
     name: "Magmadar",
-    raid: "mc",
+    instance: "mc",
     encounterId: 664,
     npcIds: [11982],
     npcIdsVerified: false,
@@ -185,7 +208,7 @@ const MOLTEN_CORE: Boss[] = [
   {
     key: "gehennas",
     name: "Gehennas",
-    raid: "mc",
+    instance: "mc",
     encounterId: 665,
     npcIds: [12259],
     addNpcIds: [11661],
@@ -225,7 +248,7 @@ const MOLTEN_CORE: Boss[] = [
   {
     key: "garr",
     name: "Garr",
-    raid: "mc",
+    instance: "mc",
     encounterId: 666,
     npcIds: [12057],
     addNpcIds: [12099],
@@ -285,7 +308,7 @@ const MOLTEN_CORE: Boss[] = [
   {
     key: "shazzrah",
     name: "Shazzrah",
-    raid: "mc",
+    instance: "mc",
     encounterId: 667,
     npcIds: [12264],
     npcIdsVerified: false,
@@ -340,7 +363,7 @@ const MOLTEN_CORE: Boss[] = [
   {
     key: "baron-geddon",
     name: "Baron Geddon",
-    raid: "mc",
+    instance: "mc",
     encounterId: 668,
     npcIds: [12056],
     npcIdsVerified: false,
@@ -388,7 +411,7 @@ const MOLTEN_CORE: Boss[] = [
   {
     key: "sulfuron",
     name: "Sulfuron Harbinger",
-    raid: "mc",
+    instance: "mc",
     encounterId: 669,
     npcIds: [12098],
     addNpcIds: [11662],
@@ -445,7 +468,7 @@ const MOLTEN_CORE: Boss[] = [
   {
     key: "golemagg",
     name: "Golemagg the Incinerator",
-    raid: "mc",
+    instance: "mc",
     encounterId: 670,
     npcIds: [11988],
     addNpcIds: [11672],
@@ -502,7 +525,7 @@ const MOLTEN_CORE: Boss[] = [
   {
     key: "majordomo",
     name: "Majordomo Executus",
-    raid: "mc",
+    instance: "mc",
     encounterId: 671,
     npcIds: [12018],
     addNpcIds: [11663, 11664],
@@ -577,7 +600,7 @@ const MOLTEN_CORE: Boss[] = [
   {
     key: "ragnaros",
     name: "Ragnaros",
-    raid: "mc",
+    instance: "mc",
     encounterId: 672,
     npcIds: [11502],
     addNpcIds: [12143],
@@ -645,7 +668,7 @@ const ONYXIA: Boss[] = [
   {
     key: "onyxia",
     name: "Onyxia",
-    raid: "onyxia",
+    instance: "onyxia",
     encounterId: 1084,
     npcIds: [10184],
     addNpcIds: [11262, 12129],
@@ -746,11 +769,11 @@ const ONYXIA: Boss[] = [
 
 type Scaffold = [key: string, name: string, encounterId: number, displayId: number | null, extraNames?: string[]];
 
-function scaffold(raid: RaidId, rows: Scaffold[]): Boss[] {
+function scaffold(instance: InstanceId, rows: Scaffold[]): Boss[] {
   return rows.map(([key, name, encounterId, displayId, extraNames]) => ({
     key,
     name,
-    raid,
+    instance,
     encounterId,
     npcIds: [],
     npcIdsVerified: false,
@@ -826,4 +849,6 @@ const NAXXRAMAS = scaffold("naxx", [
   ["kelthuzad", "Kel'Thuzad", 1114, 15945],
 ]);
 
-export const BOSSES: Boss[] = [...MOLTEN_CORE, ...ONYXIA, ...BLACKWING_LAIR, ...ZUL_GURUB, ...RUINS_OF_AHNQIRAJ, ...TEMPLE_OF_AHNQIRAJ, ...NAXXRAMAS];
+export const RAID_BOSSES: Boss[] = [...MOLTEN_CORE, ...ONYXIA, ...BLACKWING_LAIR, ...ZUL_GURUB, ...RUINS_OF_AHNQIRAJ, ...TEMPLE_OF_AHNQIRAJ, ...NAXXRAMAS];
+
+export const BOSSES: Boss[] = [...DUNGEON_BOSSES, ...RAID_BOSSES];
