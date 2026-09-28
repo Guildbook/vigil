@@ -13,7 +13,7 @@
 ]]
 
 local ADDON_NAME = ...
-local ADDON_VERSION = "0.1.0"
+local ADDON_VERSION = "0.1.1"
 local DB_VERSION = 1
 local EXPORT_VERSION = 1
 local MAX_SNAPSHOTS = 50

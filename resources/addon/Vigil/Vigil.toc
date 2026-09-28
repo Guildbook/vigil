@@ -2,10 +2,14 @@
 ## Title: Vigil
 ## Notes: Order of Saint Michael performance review. Turns on combat logging and snapshots gear, talents and stats. Never reads combat.
 ## Author: Order of Saint Michael
-## Version: 0.1.0
+## Version: 0.1.1
+## Category: Combat
+## IconTexture: Interface\AddOns\Vigil\Vigil
+## X-Website: https://guildbook.io/vigil
 ## SavedVariables: VigilDB
 
 # 11507 = WoW Classic Era 1.15.x. 120105 is a guess at the Forever (12.1.5 engine) interface number;
 # confirm with /dump select(4, GetBuildInfo()) on the Forever beta, or enable "Load out of date AddOns".
+# Vigil.tga is drawn by scripts/addon-icon.ts (pnpm addon:icon). Version must match ADDON_VERSION in Vigil.lua.
 
 Vigil.lua

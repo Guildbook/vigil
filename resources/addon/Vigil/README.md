@@ -31,7 +31,7 @@ World of Warcraft/_classic_era_/Interface/AddOns/Vigil/
 
 ## SavedVariables
 
-`VigilDB.machineExport` is a JSON string: `{"version":1,"addon":"Vigil","addonVersion":"0.1.0","snapshots":[...]}`. Each snapshot has `at` (Unix seconds), `name`, `realm`, `guid`, `class`, `race`, `level`, `stats`, `gear` and `talents`. The site parses it with `src/lib/vigil/saved-variables.ts`.
+`VigilDB.machineExport` is a JSON string: `{"version":1,"addon":"Vigil","addonVersion":"0.1.1","snapshots":[...]}`. Each snapshot has `at` (Unix seconds), `name`, `realm`, `guid`, `class`, `race`, `level`, `stats`, `gear` and `talents`. The site parses it with `src/lib/vigil/saved-variables.ts`.
 
 ## Forever client limits
 

@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { addonDestDir, compareSemver, installAddon, installedVersion, pickAddonSource } from "../src/core/addon";
+import { addonDestDir, compareSemver, installAddon, installedVersion, pickAddonSource, readTocVersion } from "../src/core/addon";
 import { discoverLogsCandidates, resolveLogsDir, wowRootCandidates } from "../src/core/wow-paths";
 
 let tmp: string;
@@ -67,6 +67,7 @@ describe("Vigil addon install", () => {
       mkdirSync(dir, { recursive: true });
       writeFileSync(path.join(dir, "Vigil.toc"), `## Interface: 11507\n## Version: ${v}\n`);
       writeFileSync(path.join(dir, "Vigil.lua"), "-- vigil\n");
+      writeFileSync(path.join(dir, "Vigil.tga"), "tga");
     }
     const picked = pickAddonSource([stale, fresh, path.join(tmp, "nope")]);
     expect(picked).toEqual({ path: fresh, version: "0.2.0" });
@@ -81,6 +82,23 @@ describe("Vigil addon install", () => {
 
     expect(installAddon(picked!.path, clientDir)).toMatchObject({ version: "0.2.0" });
     expect(installedVersion(clientDir)).toBe("0.2.0");
+    expect(readdirSync(addonDestDir(clientDir)).sort()).toEqual(["Vigil.lua", "Vigil.tga", "Vigil.toc"]);
     expect(() => installAddon(picked!.path, path.join(tmp, "missing"))).toThrow("does not exist");
+  });
+
+  it("bundles a 64x64 32-bit TGA icon that the TOC points at, and one version in the TOC and the Lua", () => {
+    const dir = path.resolve(__dirname, "..", "resources", "addon", "Vigil");
+    const toc = readFileSync(path.join(dir, "Vigil.toc"), "utf8");
+    expect(toc).toMatch(/^## IconTexture: Interface\\AddOns\\Vigil\\Vigil\r?$/m);
+    expect(toc).toMatch(/^## Category: Combat\r?$/m);
+
+    const icon = readFileSync(path.join(dir, "Vigil.tga"));
+    expect(icon[2]).toBe(2); // uncompressed true-colour
+    expect([icon.readUInt16LE(12), icon.readUInt16LE(14), icon[16]]).toEqual([64, 64, 32]);
+    expect(icon[17]! & 0x0f).toBe(8); // alpha bits
+    expect(icon.length).toBe(18 + icon[0]! + 64 * 64 * 4);
+
+    const lua = readFileSync(path.join(dir, "Vigil.lua"), "utf8").match(/^local ADDON_VERSION = "([^"]+)"/m);
+    expect(lua?.[1]).toBe(readTocVersion(path.join(dir, "Vigil.toc")));
   });
 });
