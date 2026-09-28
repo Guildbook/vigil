@@ -1,0 +1,22 @@
+node_modules/
+dist/
+release/
+coverage/
+*.tsbuildinfo
+.DS_Store
+
+# Secrets and signing material
+.env*
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+signing-*.txt
+
+# WoW combat logs (real player data)
+WoWCombatLog*.txt
+
+# debug
+npm-debug.log*
+.pnpm-debug.log*

@@ -1,0 +1,124 @@
+import type { FightReport } from "@/lib/vigil/report";
+import type { Settings, UploadState } from "./protocol";
+
+export interface UploadTarget {
+  /** The home server's origin; reports upload there whichever guild site the device belongs to. */
+  apiUrl: string;
+  token: string;
+  guild: string | null;
+  visibility: "private" | "officers" | "guild" | null;
+}
+
+export interface UploaderDeps {
+  fetch: typeof fetch;
+  target: () => UploadTarget | null;
+  onStatus: (id: string, state: UploadState) => void;
+  /** The site no longer accepts this device (revoked, or the member left). */
+  onUnauthorized: (message: string) => void;
+  setTimer?: (fn: () => void, ms: number) => unknown;
+}
+
+const BACKOFF_MS = [2_000, 5_000, 15_000, 60_000, 120_000];
+
+interface Job {
+  id: string;
+  report: FightReport;
+  attempts: number;
+}
+
+/**
+ * Uploads fight reports one at a time. Network failures, 5xx and 429 retry with backoff (honouring
+ * Retry-After); a 401 or 403 stops, since retrying a revoked token only adds load.
+ */
+export class Uploader {
+  private readonly queue: Job[] = [];
+  private busy = false;
+  private waiting = false;
+
+  constructor(private readonly deps: UploaderDeps) {}
+
+  enqueue(id: string, report: FightReport) {
+    this.queue.push({ id, report, attempts: 0 });
+    this.deps.onStatus(id, { state: "queued" });
+    void this.pump();
+  }
+
+  get pending(): number {
+    return this.queue.length;
+  }
+
+  private later(ms: number) {
+    this.waiting = true;
+    (this.deps.setTimer ?? setTimeout)(() => {
+      this.waiting = false;
+      void this.pump();
+    }, ms);
+  }
+
+  private async pump() {
+    if (this.busy || this.waiting) return;
+    const job = this.queue[0];
+    if (!job) return;
+    const target = this.deps.target();
+    if (!target) return;
+    this.busy = true;
+    this.deps.onStatus(job.id, { state: "uploading" });
+    let retryIn: number | null = null;
+    try {
+      const res = await this.deps.fetch(`${target.apiUrl.replace(/\/$/, "")}/api/vigil/companion/reports`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${target.token}` },
+        body: JSON.stringify({ report: job.report, visibility: target.visibility, guild: target.guild }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      if (res.ok && body.url) {
+        this.queue.shift();
+        this.deps.onStatus(job.id, { state: "uploaded", url: body.url });
+      } else if (res.status === 401 || res.status === 403) {
+        this.queue.shift();
+        const error = body.error ?? "The site refused this companion.";
+        this.deps.onStatus(job.id, { state: "failed", error, retrying: false });
+        this.deps.onUnauthorized(error);
+      } else if (res.status === 429 || res.status >= 500) {
+        const after = Number(res.headers.get("retry-after"));
+        retryIn = this.backoff(job);
+        if (retryIn !== null && Number.isFinite(after) && after > 0) retryIn = after * 1000;
+        this.deps.onStatus(job.id, { state: "failed", error: body.error ?? `Site error ${res.status}`, retrying: retryIn !== null });
+      } else {
+        this.queue.shift();
+        this.deps.onStatus(job.id, { state: "failed", error: body.error ?? `Upload refused (${res.status})`, retrying: false });
+      }
+    } catch (err) {
+      retryIn = this.backoff(job);
+      const error = err instanceof Error ? `Could not reach the site: ${err.message}` : "Could not reach the site.";
+      this.deps.onStatus(job.id, { state: "failed", error, retrying: retryIn !== null });
+    } finally {
+      this.busy = false;
+    }
+    if (retryIn === null) void this.pump();
+    else this.later(retryIn);
+  }
+
+  private backoff(job: Job): number | null {
+    const ms = BACKOFF_MS[job.attempts++];
+    if (ms === undefined) {
+      this.queue.shift();
+      return null;
+    }
+    return ms;
+  }
+}
+
+/** Why a finished fight should not be uploaded, or null to upload it. */
+export function skipReason(
+  report: FightReport,
+  settings: Pick<Settings, "autoUpload" | "minFightSeconds">,
+  paired: boolean,
+): string | null {
+  if (!settings.autoUpload) return "Auto-upload is off";
+  if (!paired) return "Not paired with the site";
+  if (report.fight.kind === "trash" && report.fight.durationMs < settings.minFightSeconds * 1000) {
+    return `Shorter than ${settings.minFightSeconds} s`;
+  }
+  return null;
+}

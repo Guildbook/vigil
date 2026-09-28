@@ -1,0 +1,49 @@
+{
+  "name": "vigil",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vigil: live combat log analysis on a second screen, paired with your guild's Guildbook site",
+  "author": "Guildbook",
+  "homepage": "https://guildbook.io/vigil",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Guildbook/vigil.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Guildbook/vigil/issues"
+  },
+  "license": "AGPL-3.0-only",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/dev.mjs",
+    "start": "node scripts/build.mjs && electron .",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint",
+    "test": "vitest run",
+    "demo:log": "tsx scripts/demo-log.ts",
+    "dist": "node scripts/build.mjs --production && electron-builder --config electron-builder.config.cjs --publish never",
+    "dist:mac": "node scripts/build.mjs --production && electron-builder --config electron-builder.config.cjs --mac --publish never",
+    "dist:win": "node scripts/build.mjs --production && electron-builder --config electron-builder.config.cjs --win --publish never",
+    "dist:linux": "node scripts/build.mjs --production && electron-builder --config electron-builder.config.cjs --linux --publish never",
+    "dist:dir": "node scripts/build.mjs --production && electron-builder --config electron-builder.config.cjs --dir --publish never",
+    "release": "node scripts/build.mjs --production && electron-builder --config electron-builder.config.cjs --publish always"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@fontsource/cinzel": "^5.2.8",
+    "@fontsource/inter": "^5.2.8",
+    "@types/node": "^22.19.1",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
+    "electron-updater": "^6.8.9",
+    "esbuild": "^0.28.2",
+    "eslint": "^9.39.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.47.0",
+    "vitest": "^5.0.2",
+    "zod": "^4.6.5"
+  },
+  "packageManager": "pnpm@10.33.2"
+}
