@@ -5,28 +5,15 @@
 // edited. Any failure falls back to the stock Electron.app; VIGIL_STOCK_ELECTRON=1 skips it.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 /** src/core/identity.ts DEV_APP_ID (test/identity.test.ts checks they match). */
 export const DEV_BUNDLE_ID = "io.guildbook.vigil.dev";
 const NAME = "Vigil";
 const REVISION = 1;
-const ICON_SIZES = [16, 32, 128, 256, 512];
 
 const run = (cmd, args) => execFileSync(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
-
-function icns(source, out, work) {
-  const set = path.join(work, "vigil.iconset");
-  rmSync(set, { recursive: true, force: true });
-  mkdirSync(set, { recursive: true });
-  for (const px of ICON_SIZES) {
-    run("sips", ["-z", String(px), String(px), source, "--out", path.join(set, `icon_${px}x${px}.png`)]);
-    run("sips", ["-z", String(px * 2), String(px * 2), source, "--out", path.join(set, `icon_${px}x${px}@2x.png`)]);
-  }
-  run("iconutil", ["-c", "icns", set, "-o", out]);
-  rmSync(set, { recursive: true, force: true });
-}
 
 /** The executable to run: inside the Vigil copy when it can be made, otherwise the stock one passed in. */
 export function devElectron(stockExecutable, pkg) {
@@ -35,7 +22,7 @@ export function devElectron(stockExecutable, pkg) {
   const work = path.join(pkg, "node_modules", ".cache", "vigil-dev");
   const app = path.join(work, `${NAME}.app`);
   const executable = path.join(app, "Contents", "MacOS", path.basename(stockExecutable));
-  const iconSource = path.join(pkg, "build", "icon-mac.png");
+  const iconSource = path.join(pkg, "build", "icon.icns");
   const stampFile = path.join(work, "stamp");
   try {
     const electronVersion = readFileSync(path.join(stockApp, "Contents", "Info.plist"), "utf8").match(/<key>CFBundleVersion<\/key>\s*<string>([^<]+)/)?.[1];
@@ -54,7 +41,7 @@ export function devElectron(stockExecutable, pkg) {
     }
     const plist = path.join(app, "Contents", "Info.plist");
     const iconFile = readFileSync(plist, "utf8").match(/<key>CFBundleIconFile<\/key>\s*<string>([^<]+)/)?.[1] ?? "electron.icns";
-    icns(iconSource, path.join(app, "Contents", "Resources", iconFile.endsWith(".icns") ? iconFile : `${iconFile}.icns`), work);
+    copyFileSync(iconSource, path.join(app, "Contents", "Resources", iconFile.endsWith(".icns") ? iconFile : `${iconFile}.icns`));
     for (const [key, value] of [
       ["CFBundleName", NAME],
       ["CFBundleDisplayName", NAME],

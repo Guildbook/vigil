@@ -13,6 +13,7 @@ const config = createRequire(__filename)(path.join(root, "electron-builder.confi
   copyright: string;
   extraResources: { from: string; to: string }[];
   mac: { icon: string };
+  dmg: { icon: string };
   win: { icon: string };
   nsis: Record<string, unknown>;
   linux: { icon: string; executableName: string; syncDesktopName: boolean; desktop: { entry: Record<string, string> } };
@@ -58,10 +59,22 @@ describe("app identity", () => {
   });
 
   it("builds every platform's icons from the Vigil icon and ships the PNG the app loads", () => {
-    expect(config.mac.icon).toBe("build/icon-mac.png");
+    expect(config.mac.icon).toBe("build/icon.icns");
+    expect(config.dmg.icon).toBe("build/icon.icns");
     expect(config.win.icon).toBe("build/icon.ico");
     for (const key of ["installerIcon", "uninstallerIcon", "installerHeaderIcon"]) expect(config.nsis[key]).toBe("build/icon.ico");
     expect(config.linux.icon).toBe("build/icon.png");
     expect(config.extraResources).toContainEqual({ from: "build/icon.png", to: "icon.png" });
+  });
+
+  it("ships an icns with every size, the 16 and 32 px ones as ARGB (Finder decodes PNGs in those slots as noise)", () => {
+    const icns = readFileSync(path.join(root, "build/icon.icns"));
+    const entries = new Map<string, Buffer>();
+    for (let at = 8; at < icns.length; at += icns.readUInt32BE(at + 4)) {
+      entries.set(icns.toString("latin1", at, at + 4), icns.subarray(at + 8, at + icns.readUInt32BE(at + 4)));
+    }
+    for (const type of ["ic04", "ic05"]) expect(entries.get(type)?.toString("latin1", 0, 4)).toBe("ARGB");
+    for (const type of ["ic07", "ic08", "ic09", "ic10", "ic11", "ic12", "ic13", "ic14"]) expect(entries.get(type)?.subarray(1, 4).toString()).toBe("PNG");
+    for (const type of ["icp4", "icp5", "icp6"]) expect(entries.has(type)).toBe(false);
   });
 });

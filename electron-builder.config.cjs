@@ -8,7 +8,8 @@ const { macSigned, macNotarized, azure, winSigned } = signing(env);
 
 /**
  * The name and ids repeat src/core/identity.ts and package.json (productName, desktopName); test/identity.test.ts
- * keeps them in step. Every icon comes from build/icon.png (build/icon-mac.png, with the macOS margin, for the .icns).
+ * keeps them in step. Every icon comes from build/icon.png (build/icon-mac.png, with the macOS margin, for
+ * build/icon.icns).
  * @type {import("electron-builder").Configuration}
  */
 module.exports = {
@@ -36,7 +37,8 @@ module.exports = {
       { target: "dmg", arch: ["universal"] },
       { target: "zip", arch: ["universal"] },
     ],
-    icon: "build/icon-mac.png",
+    // Prebuilt by `pnpm mac:assets`: electron-builder's own PNG to icns conversion garbles the 16 and 32 px icons.
+    icon: "build/icon.icns",
     // Without a Developer ID the app is ad-hoc signed, which Apple Silicon requires to launch at all.
     identity: macSigned ? undefined : "-",
     hardenedRuntime: macSigned,
@@ -45,7 +47,20 @@ module.exports = {
     gatekeeperAssess: false,
     notarize: macNotarized,
   },
-  dmg: { title: "Vigil ${version}" },
+  // The window, icon and label sizes and icon slots match the background drawn by scripts/mac-assets.ts (its nameplates
+  // sit under the labels; background@2x.png beside it is picked up for Retina). The window height includes the title bar.
+  dmg: {
+    title: "Vigil ${version}",
+    icon: "build/icon.icns",
+    background: "build/background.png",
+    iconSize: 112,
+    iconTextSize: 12,
+    window: { width: 660, height: 452 },
+    contents: [
+      { x: 180, y: 206, type: "file" },
+      { x: 480, y: 206, type: "link", path: "/Applications" },
+    ],
+  },
 
   win: {
     target: [{ target: "nsis", arch: ["x64"] }],

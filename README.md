@@ -154,6 +154,8 @@ pnpm dist:mac      # universal dmg + zip (ad-hoc signed without a Developer ID)
 pnpm dist:dir      # unpacked app only, for a quick look
 ```
 
+The macOS icon (`build/icon.icns`) and the dmg window's background (`build/background.png`, `background@2x.png`) are committed; after changing `build/icon-mac.png` or the dmg layout, regenerate them on a Mac with `pnpm mac:assets`.
+
 Signing and notarization switch on when their variables are set and are skipped otherwise (`scripts/signing.cjs`). Signed macOS builds use the hardened runtime with `build/entitlements.mac.plist`.
 
 **Auto-update.** `electron-updater` checks this repository's latest GitHub Release 15 seconds after launch and every six hours.
