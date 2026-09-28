@@ -120,6 +120,11 @@ jobs:
           WIN_CSC_LINK: ${{ matrix.platform == 'windows' && secrets.WIN_CSC_LINK || '' }}
           WIN_CSC_KEY_PASSWORD: ${{ matrix.platform == 'windows' && secrets.WIN_CSC_KEY_PASSWORD || '' }}
         run: |
+          # Missing secrets arrive as empty strings, and electron-builder reads an empty CSC_LINK as a path.
+          for name in CSC_LINK CSC_KEY_PASSWORD WIN_CSC_LINK WIN_CSC_KEY_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER \
+            APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
+            [ -n "${!name}" ] || unset "$name"
+          done
           node scripts/signing.cjs ${{ matrix.platform }} > signing-${{ matrix.platform }}.txt
           pnpm release --${{ matrix.platform == 'windows' && 'win' || matrix.platform }}
 
