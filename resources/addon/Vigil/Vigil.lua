@@ -14,7 +14,7 @@
 ]]
 
 local ADDON_NAME = ...
-local ADDON_VERSION = "0.2.0"
+local ADDON_VERSION = "0.2.1"
 local DB_VERSION = 1
 local EXPORT_VERSION = 1
 local MAX_SNAPSHOTS = 50
@@ -30,6 +30,7 @@ frame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
 frame:RegisterEvent("PLAYER_LEVEL_UP")
 frame:RegisterEvent("PLAYER_TALENT_UPDATE")
 pcall(frame.RegisterEvent, frame, "TRAIT_CONFIG_UPDATED")
+pcall(frame.RegisterEvent, frame, "CVAR_UPDATE")
 
 local function say(msg)
   DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. msg)
@@ -159,12 +160,108 @@ end
 -- Combat logging
 -- ---------------------------------------------------------------------------
 
+--[[
+  LoggingCombat is rate limited to 5 calls per 10 seconds, shared by every addon and /combatlog, and the
+  limit counts plain queries too. A limited call returns nil and changes nothing. So Vigil never polls it:
+  the state lives in `loggingState`, refreshed by the return value of each set, one query at login, and
+  occasional guarded queries. The UI only reads the cache.
+]]
+
+local LOG_CALL_WINDOW = 10
+local LOG_CALL_BUDGET = 3
+local LOG_RETRY_DELAY = 2.5
+local LOG_MAX_ATTEMPTS = 6
+local LOG_QUERY_MIN_INTERVAL = 5
+
+local loggingState -- true, false, or nil while unknown
+local lastLogQuery = -math.huge
+local logCalls = {}
+local pendingLogging -- the state a set is still waiting to apply, or nil
+local pendingAttempts = 0
+local pendingTimer = false
+local pendingDone
+local pendingToken = 0
+-- True once a change has been pending longer than PENDING_INDICATOR_DELAY; only then does the UI show it.
+local pendingIndicator = false
+local PENDING_INDICATOR_DELAY = 0.3
+-- A short note after a change finally failed (rate limited or refused); cleared by the next request.
+local logNote
+
+local function now()
+  return clean(GetTime) or 0
+end
+
+local function after(delay, fn)
+  if type(C_Timer) == "table" and type(C_Timer.After) == "function" then
+    C_Timer.After(delay, fn)
+    return true
+  end
+  return false
+end
+
 local function loggingAvailable()
   return type(LoggingCombat) == "function"
 end
 
+--- Classic clients have returned booleans, 1/nil and 0; nil means the call was rate limited.
+local function normalizeLogState(v)
+  if v == nil or isSecret(v) then
+    return nil
+  end
+  return v ~= false and v ~= 0
+end
+
+local function logBudgetLeft()
+  local t = now()
+  while logCalls[1] and t - logCalls[1] >= LOG_CALL_WINDOW do
+    table.remove(logCalls, 1)
+  end
+  return LOG_CALL_BUDGET - #logCalls
+end
+
+local function logBudgetDelay()
+  if not logCalls[1] then
+    return 0
+  end
+  return math.max(0.1, LOG_CALL_WINDOW - (now() - logCalls[1]) + 0.1)
+end
+
+--- Reads the client's logging state when the budget allows; otherwise the cached value.
+local function queryLogging(force)
+  if not loggingAvailable() or pendingLogging ~= nil then
+    return loggingState
+  end
+  if not force and now() - lastLogQuery < LOG_QUERY_MIN_INTERVAL then
+    return loggingState
+  end
+  if logBudgetLeft() < 1 then
+    return loggingState
+  end
+  table.insert(logCalls, now())
+  lastLogQuery = now()
+  -- Zero arguments: passing nil explicitly turns logging off.
+  local ok, v = pcall(LoggingCombat)
+  local state
+  if ok then
+    state = normalizeLogState(v)
+  end
+  if state ~= nil then
+    loggingState = state
+  end
+  return loggingState
+end
+
+--- The state being applied, else the last known state. Only the auto logic uses this; the UI shows
+--- confirmed state (`isLogging`) and a delayed spinner while a change is pending.
+local function displayedLogging()
+  if pendingLogging ~= nil then
+    return pendingLogging, true
+  end
+  return loggingState, false
+end
+
 local function isLogging()
-  return clean(LoggingCombat) == true
+  return loggingState == true
 end
 
 local function advancedLoggingOn()
@@ -174,16 +271,106 @@ local function advancedLoggingOn()
   return clean(GetCVar, "advancedCombatLogging") == "1"
 end
 
-local function setLogging(on)
+local ADVANCED_HINT = "turn on Advanced Combat Logging in System > Network for rage, mana and position data."
+
+-- Assigned once the panel exists; logging, the minimap button, slash commands and events call through these.
+local refreshPanel = function() end
+local togglePanel
+
+local flushLogging
+
+local function scheduleLoggingFlush(delay)
+  if pendingTimer then
+    return
+  end
+  pendingTimer = true
+  if not after(delay, flushLogging) then
+    flushLogging()
+  end
+end
+
+local function finishLogging(success)
+  pendingLogging = nil
+  pendingAttempts = 0
+  pendingToken = pendingToken + 1
+  pendingIndicator = false
+  local done = pendingDone
+  pendingDone = nil
+  if done then
+    done(success)
+  end
+end
+
+flushLogging = function()
+  pendingTimer = false
+  local want = pendingLogging
+  if want == nil then
+    return
+  end
+  if logBudgetLeft() < 1 then
+    scheduleLoggingFlush(logBudgetDelay())
+    return
+  end
+  table.insert(logCalls, now())
+  local ok, v = pcall(LoggingCombat, want)
+  local state
+  if ok then
+    state = normalizeLogState(v)
+  end
+  if not ok then
+    logNote = "The client refused. Type /combatlog in chat instead."
+    finishLogging(false)
+    say("the client refused to change combat logging. Type /combatlog in chat instead.")
+  elseif state ~= nil then
+    loggingState = state
+    lastLogQuery = now()
+    finishLogging(state == want)
+  else
+    pendingAttempts = pendingAttempts + 1
+    if pendingAttempts >= LOG_MAX_ATTEMPTS or type(C_Timer) ~= "table" then
+      logNote = "Rate limited by the game. Try again in a few seconds."
+      finishLogging(false)
+      say("the game is rate limiting combat log changes (5 per 10 seconds, shared with /combatlog). Try again shortly.")
+    else
+      scheduleLoggingFlush(LOG_RETRY_DELAY)
+    end
+  end
+  refreshPanel()
+end
+
+--- Asks for a logging state. The client call runs on the next frame (it can hitch while the log file
+--- opens) and retries while the game rate limits it; the UI shows a spinner only if it takes a while.
+--- `onDone(success)` follows.
+local function requestLogging(on, onDone)
   if not loggingAvailable() then
     say("LoggingCombat is not available on this client. Type /combatlog in chat instead.")
     return false
   end
-  local ok = pcall(LoggingCombat, on and true or false)
-  if not ok then
-    say("The client refused to toggle combat logging. Type /combatlog in chat instead.")
-    return false
+  on = on and true or false
+  if pendingLogging == nil and loggingState == on and not pendingTimer then
+    if onDone then
+      onDone(true)
+    end
+    refreshPanel()
+    return true
   end
+  local wasPending = pendingLogging ~= nil
+  pendingLogging = on
+  pendingAttempts = 0
+  pendingDone = onDone
+  logNote = nil
+  if not wasPending then
+    pendingToken = pendingToken + 1
+    local token = pendingToken
+    after(PENDING_INDICATOR_DELAY, function()
+      if token == pendingToken and pendingLogging ~= nil then
+        pendingIndicator = true
+        refreshPanel()
+      end
+    end)
+  end
+  refreshPanel()
+  scheduleLoggingFlush(0)
   return true
 end
 
@@ -194,7 +381,7 @@ local function logStatusLine()
   local settings = ensureDB().settings
   return string.format(
     "combat log: %s, advanced logging: %s, every login: %s, dungeons and raids: %s",
-    isLogging() and "ON" or "off",
+    loggingState == nil and "unknown" or loggingState and "ON" or "off",
     advancedLoggingOn() and "on" or "OFF (System > Network > Advanced Combat Logging)",
     settings.autoLog and "on" or "off",
     settings.autoLogInstances and "on" or "off"
@@ -212,30 +399,111 @@ local function trackedInstance()
 end
 
 -- True while logging is on only because the instance option turned it on, so leaving can turn it off.
+-- Any manual change (panel, minimap, /vigil log, /combatlog) clears it: the user's choice wins.
 local loggingForInstance = false
 
-local function applyAutoLogging()
+-- The last dungeon or raid seen ("name|type"), false in the open world, nil before the first check.
+local lastInstanceKey
+local leaveCheckToken = 0
+local LEAVE_CONFIRM_DELAY = 3
+
+local function instanceKey()
+  local tracked, name, instanceType = trackedInstance()
+  if tracked then
+    return name .. "|" .. tostring(instanceType)
+  end
+  return false
+end
+
+--- Turns logging on for the current dungeon or raid when the option is set and it is not already on.
+local function logForInstance()
+  local settings = ensureDB().settings
+  if not settings.autoLogInstances or not loggingAvailable() then
+    return
+  end
+  if displayedLogging() == true or queryLogging(true) == true then
+    return
+  end
+  loggingForInstance = true
+  requestLogging(true, function(success)
+    if success then
+      say("combat logging on for this instance.")
+      if not advancedLoggingOn() then
+        say(ADVANCED_HINT)
+      end
+    else
+      loggingForInstance = false
+    end
+  end)
+end
+
+local function stopLoggingForInstance()
+  if not loggingForInstance or ensureDB().settings.autoLog then
+    loggingForInstance = false
+    return
+  end
+  loggingForInstance = false
+  requestLogging(false, function(success)
+    if success then
+      say("combat logging off: you left the instance.")
+    end
+  end)
+end
+
+--- Acts only when the player actually moves into or out of a dungeon or raid, never on other zone events.
+--- Leaving is confirmed a few seconds later, since instance info can read stale during a loading screen.
+local function onZoneChanged()
+  local key = instanceKey()
+  local previous = lastInstanceKey
+  if key == previous then
+    return
+  end
+  lastInstanceKey = key
+  leaveCheckToken = leaveCheckToken + 1
+  if key then
+    logForInstance()
+  elseif previous then
+    local token = leaveCheckToken
+    local confirm = function()
+      if token == leaveCheckToken and instanceKey() == false then
+        stopLoggingForInstance()
+      end
+    end
+    if not after(LEAVE_CONFIRM_DELAY, confirm) then
+      confirm()
+    end
+  end
+end
+
+local startupDone = false
+
+--- First PLAYER_ENTERING_WORLD of the session (login or /reload): read the state once, apply 'every login'.
+local function onStartup()
+  startupDone = true
   if not loggingAvailable() then
     return
   end
-  local settings = ensureDB().settings
-  local tracked = trackedInstance()
-  if settings.autoLog then
-    loggingForInstance = false
-    if not isLogging() then
-      setLogging(true)
-    end
-  elseif settings.autoLogInstances and tracked then
-    if not isLogging() and setLogging(true) then
-      loggingForInstance = true
-      say("combat logging on for this instance.")
-    end
-  elseif loggingForInstance and not tracked then
-    loggingForInstance = false
-    if isLogging() and setLogging(false) then
-      say("combat logging off: you left the instance.")
-    end
+  queryLogging(true)
+  if ensureDB().settings.autoLog and loggingState ~= true then
+    requestLogging(true)
   end
+end
+
+--- /combatlog is a manual choice too: stop managing the state and re-read it once the command has run.
+local function hookCombatLogCommand()
+  if type(hooksecurefunc) ~= "function" or type(SlashCmdList) ~= "table" then
+    return
+  end
+  if type(SlashCmdList.COMBATLOG) ~= "function" then
+    return
+  end
+  pcall(hooksecurefunc, SlashCmdList, "COMBATLOG", function()
+    loggingForInstance = false
+    after(1, function()
+      queryLogging(true)
+      refreshPanel()
+    end)
+  end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -490,16 +758,18 @@ end
 -- Shared UI actions
 -- ---------------------------------------------------------------------------
 
-local ADVANCED_HINT = "turn on Advanced Combat Logging in System > Network for rage, mana and position data."
-
--- Assigned once the panel exists; the minimap button, slash commands and events call through these.
-local refreshPanel = function() end
-local togglePanel
-
+--- Manual toggle from the panel, minimap button, compartment or /vigil log. Clicks while a change is
+--- still pending are ignored.
 local function toggleLogging()
+  if pendingLogging ~= nil then
+    return
+  end
   local on = not isLogging()
-  if setLogging(on) then
-    loggingForInstance = false
+  loggingForInstance = false
+  requestLogging(on, function(success)
+    if not success then
+      return
+    end
     if on then
       say("combat logging on.")
       if not advancedLoggingOn() then
@@ -510,8 +780,7 @@ local function toggleLogging()
     else
       say("combat logging off.")
     end
-  end
-  refreshPanel()
+  end)
 end
 
 --- Where to anchor a tooltip so it opens away from the nearest screen edges (LibDBIcon's rule).
@@ -526,6 +795,17 @@ local function tooltipAnchor(owner)
   return v .. h, (v == "TOP" and "BOTTOM" or "TOP") .. h
 end
 
+--- The confirmed logging state as text and colour; never calls the client.
+local function loggingLabel()
+  local state = loggingState
+  if state == nil then
+    return "Unknown", 0.6, 0.6, 0.6
+  elseif state then
+    return "On", 0.3, 1, 0.3
+  end
+  return "Off", 1, 0.3, 0.3
+end
+
 local function showTooltip(owner, draggable)
   local tooltip = GameTooltip
   if owner then
@@ -538,8 +818,13 @@ local function showTooltip(owner, draggable)
   end
   tooltip:AddDoubleLine("Vigil", "v" .. ADDON_VERSION, 1, 0.82, 0, 0.6, 0.6, 0.6)
   if loggingAvailable() then
-    local on = isLogging()
-    tooltip:AddDoubleLine("Combat logging", on and "On" or "Off", 1, 1, 1, on and 0.3 or 1, on and 1 or 0.3, 0.3)
+    local text, r, g, b = loggingLabel()
+    tooltip:AddDoubleLine("Combat logging", text, 1, 1, 1, r, g, b)
+    if pendingIndicator then
+      tooltip:AddLine("Updating...", 1, 0.82, 0)
+    elseif logNote then
+      tooltip:AddLine(logNote, 1, 0.7, 0.3, true)
+    end
   else
     tooltip:AddLine("Combat logging: type /combatlog in chat", 1, 1, 1)
   end
@@ -729,21 +1014,80 @@ end
 -- Panel
 -- ---------------------------------------------------------------------------
 
-local PANEL_WIDTH = 340
+local PANEL_WIDTH = 360
+local PANEL_PAD = 22
+local CONTENT_WIDTH = PANEL_WIDTH - 2 * PANEL_PAD
+local TOGGLE_WIDTH = 96
+local CHECK_SIZE = 24
 local panel
 
-local function addCheckbox(parent, label, anchor, onToggle)
+--- Left-aligned text that wraps inside a fixed width instead of running past the frame.
+local function addText(parent, template, width)
+  local fs = parent:CreateFontString(nil, "OVERLAY", template)
+  fs:SetWidth(width)
+  fs:SetJustifyH("LEFT")
+  fs:SetJustifyV("TOP")
+  if fs.SetWordWrap then
+    fs:SetWordWrap(true)
+  end
+  if fs.SetNonSpaceWrap then
+    fs:SetNonSpaceWrap(true)
+  end
+  return fs
+end
+
+local function textHeight(fs)
+  local h = fs:GetStringHeight() or 0
+  if h <= 0 and (fs:GetText() or "") ~= "" then
+    local _, size = fs:GetFont()
+    h = size or 12
+  end
+  return math.ceil(h)
+end
+
+local function addCheckbox(parent, label, onToggle)
   local check = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
-  check:SetSize(24, 24)
-  check:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -6)
-  local text = check:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-  text:SetPoint("LEFT", check, "RIGHT", 2, 1)
+  check:SetSize(CHECK_SIZE, CHECK_SIZE)
+  local labelWidth = CONTENT_WIDTH - CHECK_SIZE - 2
+  local text = addText(check, "GameFontHighlight", labelWidth)
+  text:SetPoint("TOPLEFT", check, "TOPRIGHT", 2, -6)
   text:SetText(label)
+  check.label = text
+  check:SetHitRectInsets(0, -labelWidth, 0, 0)
   check:SetScript("OnClick", function(self)
     onToggle(self:GetChecked() and true or false)
     refreshPanel()
   end)
   return check
+end
+
+--- Stacks the rows top to bottom from their current text and fits the frame height to them.
+local function layoutPanel(f)
+  local function place(region, x, y)
+    region:ClearAllPoints()
+    region:SetPoint("TOPLEFT", f, "TOPLEFT", x, -y)
+  end
+  local y = 50
+  place(f.status, PANEL_PAD, y + 4)
+  f.toggle:ClearAllPoints()
+  f.toggle:SetPoint("TOPRIGHT", f, "TOPRIGHT", -PANEL_PAD, -y)
+  y = y + math.max(textHeight(f.status) + 4, f.toggle:GetHeight()) + 8
+  place(f.note, PANEL_PAD, y)
+  if (f.note:GetText() or "") ~= "" then
+    y = y + textHeight(f.note) + 6
+  end
+  place(f.advanced, PANEL_PAD, y)
+  y = y + textHeight(f.advanced) + 6
+  place(f.zone, PANEL_PAD, y)
+  y = y + textHeight(f.zone) + 8
+  for _, check in ipairs(f.checks) do
+    place(check, PANEL_PAD - 4, y)
+    y = y + math.max(CHECK_SIZE, textHeight(check.label) + 8) + 2
+  end
+  y = y + 10
+  place(f.footer, PANEL_PAD, y)
+  y = y + textHeight(f.footer) + PANEL_PAD
+  f:SetHeight(math.ceil(y))
 end
 
 local function createPanel()
@@ -776,7 +1120,7 @@ local function createPanel()
   local icon = f:CreateTexture(nil, "ARTWORK")
   icon:SetTexture(ICON)
   icon:SetSize(20, 20)
-  icon:SetPoint("TOPLEFT", 18, -16)
+  icon:SetPoint("TOPLEFT", PANEL_PAD - 2, -18)
 
   local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
   title:SetPoint("LEFT", icon, "RIGHT", 6, 0)
@@ -789,79 +1133,107 @@ local function createPanel()
   local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
   close:SetPoint("TOPRIGHT", -4, -4)
 
-  local status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-  status:SetPoint("TOPLEFT", icon, "BOTTOMLEFT", 2, -16)
-  f.status = status
+  f.status = addText(f, "GameFontHighlight", CONTENT_WIDTH - TOGGLE_WIDTH - 8)
 
   local toggle = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-  toggle:SetSize(96, 22)
-  toggle:SetPoint("RIGHT", f, "RIGHT", -20, 0)
-  toggle:SetPoint("TOP", status, "TOP", 0, 5)
+  toggle:SetSize(TOGGLE_WIDTH, 22)
   toggle:SetScript("OnClick", toggleLogging)
   f.toggle = toggle
 
-  local advanced = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  advanced:SetPoint("TOPLEFT", status, "BOTTOMLEFT", 0, -8)
-  advanced:SetWidth(PANEL_WIDTH - 40)
-  advanced:SetJustifyH("LEFT")
-  f.advanced = advanced
+  -- Shown only when a change is still pending after PENDING_INDICATOR_DELAY. StreamCircle ships with every
+  -- client Vigil supports (Details uses it the same way); without animations it just shows static.
+  local spinner = CreateFrame("Frame", nil, toggle)
+  spinner:SetSize(16, 16)
+  spinner:SetPoint("LEFT", toggle, "LEFT", 5, 0)
+  spinner:SetFrameLevel(toggle:GetFrameLevel() + 2)
+  local ring = spinner:CreateTexture(nil, "OVERLAY")
+  ring:SetTexture("Interface\\COMMON\\StreamCircle")
+  ring:SetAllPoints()
+  if spinner.CreateAnimationGroup then
+    local ok, group = pcall(spinner.CreateAnimationGroup, spinner)
+    local rotation = ok and group and group:CreateAnimation("Rotation")
+    if rotation then
+      rotation:SetDegrees(-360)
+      rotation:SetDuration(1)
+      group:SetLooping("REPEAT")
+      spinner.anim = group
+    end
+  end
+  spinner:Hide()
+  f.spinner = spinner
 
-  local zone = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  zone:SetPoint("TOPLEFT", advanced, "BOTTOMLEFT", 0, -6)
-  zone:SetWidth(PANEL_WIDTH - 40)
-  zone:SetJustifyH("LEFT")
-  f.zone = zone
+  f.note = addText(f, "GameFontNormalSmall", CONTENT_WIDTH)
 
-  local anchor = CreateFrame("Frame", nil, f)
-  anchor:SetSize(1, 1)
-  anchor:SetPoint("TOPLEFT", zone, "BOTTOMLEFT", -4, -4)
+  f.advanced = addText(f, "GameFontDisableSmall", CONTENT_WIDTH)
+  f.zone = addText(f, "GameFontHighlightSmall", CONTENT_WIDTH)
 
-  f.autoLog = addCheckbox(f, "Keep combat logging on at every login", anchor, function(on)
+  f.autoLog = addCheckbox(f, "Keep combat logging on at every login", function(on)
     ensureDB().settings.autoLog = on
     if on then
-      applyAutoLogging()
+      loggingForInstance = false
+      if not isLogging() then
+        requestLogging(true)
+      end
     end
   end)
-  f.autoLogInstances = addCheckbox(f, "Turn combat logging on in dungeons and raids", f.autoLog, function(on)
+  f.autoLogInstances = addCheckbox(f, "Turn combat logging on in dungeons and raids", function(on)
     ensureDB().settings.autoLogInstances = on
-    if on then
-      applyAutoLogging()
+    if on and instanceKey() then
+      logForInstance()
     end
   end)
-  f.minimap = addCheckbox(f, "Show minimap button", f.autoLogInstances, function(on)
+  f.minimap = addCheckbox(f, "Show minimap button", function(on)
     setMinimapHidden(not on)
   end)
+  f.checks = { f.autoLog, f.autoLogInstances, f.minimap }
 
-  local footer = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  footer:SetPoint("BOTTOMLEFT", 20, 18)
-  footer:SetWidth(PANEL_WIDTH - 40)
-  footer:SetJustifyH("LEFT")
-  footer:SetText("Uploads happen from the Vigil desktop app. This addon never reads combat.")
+  f.footer = addText(f, "GameFontDisableSmall", CONTENT_WIDTH)
+  f.footer:SetText("Uploads happen from the Vigil desktop app. This addon never reads combat.")
 
-  local elapsed = 0
-  f:SetScript("OnUpdate", function(_, dt)
-    elapsed = elapsed + (dt or 0)
-    if elapsed >= 1 then
-      elapsed = 0
-      refreshPanel()
-    end
-  end)
   f:SetScript("OnShow", function()
+    -- One guarded read picks up a /combatlog typed while the panel was closed; the budget keeps it cheap.
+    queryLogging(false)
     refreshPanel()
+    -- String heights can read short on the very first frame a font is drawn; measure again.
+    after(0, function()
+      if f:IsShown() then
+        layoutPanel(f)
+      end
+    end)
   end)
   return f
 end
 
+--- Pure read of cached state and cheap zone/CVar queries; safe to call on any event.
 refreshPanel = function()
+  if minimapButton and not minimapButton.isMoving and GameTooltip:IsOwned(minimapButton) then
+    showTooltip(minimapButton, true)
+  end
   if not panel or not panel:IsShown() then
     return
   end
   local db = ensureDB()
   if loggingAvailable() then
-    local on = isLogging()
-    panel.status:SetText("Combat logging: " .. (on and "|cff4cff4cOn|r" or "|cffff4c4cOff|r"))
-    panel.toggle:SetText(on and "Turn off" or "Turn on")
-    panel.toggle:Enable()
+    local text, r, g, b = loggingLabel()
+    panel.status:SetText(string.format("Combat logging: |cff%02x%02x%02x%s|r",
+      math.floor(r * 255), math.floor(g * 255), math.floor(b * 255), text))
+    panel.toggle:SetText(isLogging() and "Turn off" or "Turn on")
+    if pendingIndicator then
+      panel.toggle:Disable()
+      if not panel.spinner:IsShown() then
+        panel.spinner:Show()
+        if panel.spinner.anim then
+          panel.spinner.anim:Play()
+        end
+      end
+    else
+      panel.toggle:Enable()
+      if panel.spinner.anim then
+        panel.spinner.anim:Stop()
+      end
+      panel.spinner:Hide()
+    end
+    panel.note:SetText(logNote and ("|cffffb24c" .. logNote .. "|r") or "")
   else
     panel.status:SetText("Combat logging: type /combatlog in chat")
     panel.toggle:SetText("Unavailable")
@@ -886,6 +1258,7 @@ refreshPanel = function()
   panel.autoLog:SetChecked(db.settings.autoLog)
   panel.autoLogInstances:SetChecked(db.settings.autoLogInstances)
   panel.minimap:SetChecked(not db.minimap.hide)
+  layoutPanel(panel)
 end
 
 togglePanel = function()
@@ -949,21 +1322,23 @@ SlashCmdList.VIGIL = function(msg)
     toggleLogging()
   elseif msg == "log on" then
     db.settings.autoLog = true
-    if setLogging(true) then
-      loggingForInstance = false
-      say("combat logging on. It turns back on at every login until /vigil log off.")
-    end
-    if not advancedLoggingOn() then
-      say(ADVANCED_HINT)
-    end
-    refreshPanel()
+    loggingForInstance = false
+    requestLogging(true, function(success)
+      if success then
+        say("combat logging on. It turns back on at every login until /vigil log off.")
+        if not advancedLoggingOn() then
+          say(ADVANCED_HINT)
+        end
+      end
+    end)
   elseif msg == "log off" then
     db.settings.autoLog = false
-    if setLogging(false) then
-      loggingForInstance = false
-      say("combat logging off.")
-    end
-    refreshPanel()
+    loggingForInstance = false
+    requestLogging(false, function(success)
+      if success then
+        say("combat logging off.")
+      end
+    end)
   elseif msg == "minimap" then
     setMinimapHidden(not db.minimap.hide)
     if db.minimap.hide then
@@ -972,6 +1347,7 @@ SlashCmdList.VIGIL = function(msg)
       say("minimap button shown.")
     end
   elseif msg == "status" then
+    queryLogging(false)
     printStatus()
   elseif msg == "snapshot" then
     takeSnapshot("manual", true)
@@ -994,9 +1370,15 @@ frame:SetScript("OnEvent", function(_, event, ...)
     end
   elseif event == "PLAYER_LOGIN" then
     applyMinimapVisibility()
+    hookCombatLogCommand()
     scheduleSnapshot("login")
   elseif event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" then
-    applyAutoLogging()
+    if not startupDone then
+      onStartup()
+    end
+    onZoneChanged()
+    refreshPanel()
+  elseif event == "CVAR_UPDATE" then
     refreshPanel()
   elseif event == "PLAYER_REGEN_ENABLED" then
     scheduleSnapshot("combat_end")

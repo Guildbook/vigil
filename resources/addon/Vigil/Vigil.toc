@@ -2,7 +2,7 @@
 ## Title: Vigil
 ## Notes: Order of Saint Michael performance review. Turns on combat logging and snapshots gear, talents and stats. Never reads combat.
 ## Author: Order of Saint Michael
-## Version: 0.2.0
+## Version: 0.2.1
 ## Category: Combat
 ## IconTexture: Interface\AddOns\Vigil\Vigil
 ## X-Website: https://guildbook.io/vigil

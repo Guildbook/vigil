@@ -88,6 +88,28 @@ describe("bundled Vigil addon files", () => {
     expect(readme.match(/"addonVersion":"([^"]+)"/)?.[1]).toBe(version);
   });
 
+  it("calls LoggingCombat only through the rate-limit-aware query and set", () => {
+    // The client allows 5 LoggingCombat calls per 10 seconds, queries included; polling it flips the UI.
+    const uses: string[] = [];
+    walk(ast, (n) => {
+      if (n.type !== "CallExpression") return;
+      const base = n.base as Node;
+      const args = n.arguments as Node[];
+      if (base.type === "Identifier" && base.name === "LoggingCombat") uses.push("direct");
+      if (args.some((a) => a.type === "Identifier" && a.name === "LoggingCombat")) {
+        uses.push(`${base.type === "Identifier" ? (base.name as string) : "?"}/${args.length}`);
+      }
+    });
+    expect(uses.sort()).toEqual(["pcall/1", "pcall/2", "type/1"]);
+    expect(luaText).toMatch(/pcall\(LoggingCombat\)\n/);
+    expect(luaText).toMatch(/pcall\(LoggingCombat, want\)\n/);
+  });
+
+  it("only uses OnUpdate for dragging the minimap button", () => {
+    const onUpdate = [...luaText.matchAll(/SetScript\("OnUpdate", ([^)]+)\)/g)].map((m) => m[1]);
+    expect(onUpdate.sort()).toEqual(["nil", "onDragUpdate"]);
+  });
+
   it("has no middots or emoji in the addon", () => {
     for (const text of [tocText, luaText]) {
       expect(text.includes(String.fromCharCode(0xb7))).toBe(false);
