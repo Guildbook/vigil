@@ -1,15 +1,19 @@
-## Interface: 11507, 120105
+## Interface: 11507, 11508, 11509, 16001, 20505, 20506, 120001, 120100
 ## Title: Vigil
 ## Notes: Order of Saint Michael performance review. Turns on combat logging and snapshots gear, talents and stats. Never reads combat.
 ## Author: Order of Saint Michael
-## Version: 0.1.1
+## Version: 0.2.0
 ## Category: Combat
 ## IconTexture: Interface\AddOns\Vigil\Vigil
 ## X-Website: https://guildbook.io/vigil
 ## SavedVariables: VigilDB
+## AddonCompartmentFunc: Vigil_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: Vigil_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: Vigil_OnAddonCompartmentLeave
 
-# 11507 = WoW Classic Era 1.15.x. 120105 is a guess at the Forever (12.1.5 engine) interface number;
-# confirm with /dump select(4, GetBuildInfo()) on the Forever beta, or enable "Load out of date AddOns".
+# 1150x = Classic Era 1.15.x. 16001 = the Classic beta client 1.60.1 (Forever beta). 2050x = TBC Anniversary 2.5.x.
+# 120001, 120100 = retail 12.x. Check a client with /dump select(4, GetBuildInfo()).
+# Clients without the addon compartment ignore the AddonCompartmentFunc lines.
 # Vigil.tga is drawn by scripts/addon-icon.ts (pnpm addon:icon). Version must match ADDON_VERSION in Vigil.lua.
 
 Vigil.lua
