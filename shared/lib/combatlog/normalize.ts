@@ -1,4 +1,4 @@
-import { isGuidLike, parseFlags } from "./guid";
+import { isGuidLike, isPlayerGuid, parseFlags } from "./guid";
 import type { Field, LogHeader, TokenizedLine } from "./tokenizer";
 import type { AdvancedInfo, CombatEvent, LogUnit } from "./types";
 
@@ -21,9 +21,14 @@ const bool = (f: Field | undefined) => str(f) === "1";
 function numList(f: Field | undefined): number[] | undefined {
   const s = str(f);
   if (!s) return undefined;
-  const values = s.split("|").map(Number);
+  const values = s.split(/[|:]/).map(Number);
   return values.every(Number.isFinite) ? values : undefined;
 }
+
+const INT = /^-?\d+$/;
+const NUMBER = /^-?\d+(\.\d+)?$/;
+const INT_LIST = /^-?\d+([|:]-?\d+)*$/;
+const is = (re: RegExp, f: Field | undefined) => typeof f === "string" && re.test(f);
 
 function unit(fields: Field[], at: number): LogUnit | null {
   const guid = str(fields[at]);
@@ -32,15 +37,51 @@ function unit(fields: Field[], at: number): LogUnit | null {
 }
 
 /**
- * Advanced parameters. Retail (COMBAT_LOG_VERSION 20+) writes 17: infoGUID, ownerGUID, currentHP, maxHP,
- * attackPower, spellPower, armor, absorb, powerType, currentPower, maxPower, powerCost, positionX,
- * positionY, uiMapID, facing, level. Older logs have no absorb field (16).
+ * Whether the advanced block at `at` has `extra` fields between armor and powerType: infoGUID, ownerGUID,
+ * currentHP, maxHP, attackPower, spellPower, armor, [extra], powerType, currentPower, maxPower, powerCost,
+ * positionX, positionY, uiMapID, facing, level.
  */
-function advanced(fields: Field[], at: number, version: number | null): { info: AdvancedInfo; length: number } {
-  const hasAbsorb = version === null || version >= 20;
-  const o = hasAbsorb ? 1 : 0;
+function fitsLayout(fields: Field[], at: number, extra: number): boolean {
+  const p = at + 7 + extra;
+  const power = [fields[p], fields[p + 1], fields[p + 2]].map((f) => (typeof f === "string" ? f.split(/[|:]/).length : -1));
+  const facing = num(fields[p + 7]);
+  return (
+    isGuidLike(str(fields[at + 1])) &&
+    [2, 3, 4, 5, 6].every((k) => is(INT, fields[at + k])) &&
+    [p, p + 1, p + 2].every((k) => is(INT_LIST, fields[k])) &&
+    power[0] === power[1] &&
+    power[1] === power[2] &&
+    is(INT, fields[p + 3]) &&
+    is(NUMBER, fields[p + 4]) &&
+    is(NUMBER, fields[p + 5]) &&
+    is(INT, fields[p + 6]) &&
+    is(NUMBER, fields[p + 7]) &&
+    facing !== undefined &&
+    Math.abs(facing) <= 7 &&
+    is(INT, fields[p + 8])
+  );
+}
+
+/** Level cap of the client that wrote the log, from BUILD_VERSION (Classic branches), else the schema's 100. */
+function maxLevel(build: string | null): number {
+  const major = Number(build?.split(".")[0]);
+  return ({ 1: 60, 2: 70, 3: 80, 4: 85, 5: 90 } as Record<number, number>)[major] ?? 100;
+}
+
+/**
+ * Advanced parameters: 16 fields plus 0 to 4 between armor and powerType. Retail (COMBAT_LOG_VERSION 20+)
+ * writes absorb there (17); older retail writes nothing (16); the TBC Anniversary client (version 9, build
+ * 2.5.x) writes two (18). The layout is read from the fields, falling back to the version when none fits.
+ */
+function advanced(fields: Field[], at: number, header: LogHeader): { info: AdvancedInfo; length: number } {
+  const byVersion = header.version === null || header.version >= 20 ? 1 : 0;
+  const o = [byVersion, 0, 1, 2, 3, 4].find((extra) => fitsLayout(fields, at, extra)) ?? byVersion;
+  const guid = str(fields[at]) ?? "";
+  // Modern clients write item level in the level column for players; a value over the cap is not a level.
+  const level = num(fields[at + 15 + o]);
+  const playerLevelOk = level !== undefined && level >= 1 && level <= maxLevel(header.build);
   const info: AdvancedInfo = {
-    guid: str(fields[at]) ?? "",
+    guid,
     hp: num(fields[at + 2]),
     maxHp: num(fields[at + 3]),
     attackPower: num(fields[at + 4]),
@@ -52,9 +93,23 @@ function advanced(fields: Field[], at: number, version: number | null): { info: 
     powerCost: num(fields[at + 10 + o]),
     x: num(fields[at + 11 + o]),
     y: num(fields[at + 12 + o]),
-    level: num(fields[at + 15 + o]),
+    level: !isPlayerGuid(guid) || playerLevelOk ? level : undefined,
   };
   return { info, length: 16 + o };
+}
+
+const isOverkill = (f: Field | undefined) => is(INT, f) && Number(f) >= -1;
+const isSchool = (f: Field | undefined) => is(INT, f) && Number(f) >= 1 && Number(f) <= 127;
+
+/**
+ * Whether a damage suffix carries baseAmount after amount (retail, and Classic clients built on it). Read from
+ * the overkill and school fields, since 2.5.x swings write baseAmount in 10 fields; the length decides a tie.
+ */
+function hasBaseAmount(rest: Field[]): boolean {
+  const withBase = isOverkill(rest[2]) && isSchool(rest[3]);
+  const without = isOverkill(rest[1]) && isSchool(rest[2]);
+  if (withBase !== without) return withBase;
+  return rest.length >= 11;
 }
 
 export interface NormalizeContext {
@@ -103,7 +158,7 @@ export function normalizeEvent(line: TokenizedLine, ctx: NormalizeContext): Comb
   const suffix = type.slice(prefix.length);
   const advancedOff = ctx.header.version !== null && !ctx.header.advanced;
   if (!advancedOff && ADVANCED_SUFFIXES.includes(suffix) && isGuidLike(str(fields[i]))) {
-    const adv = advanced(fields, i, ctx.header.version);
+    const adv = advanced(fields, i, ctx.header);
     ev.adv = adv.info;
     i += adv.length;
   }
@@ -111,7 +166,7 @@ export function normalizeEvent(line: TokenizedLine, ctx: NormalizeContext): Comb
   const rest = fields.slice(i);
   if (suffix === "_DAMAGE" || suffix === "_DAMAGE_LANDED" || suffix === "_SHIELD" || suffix === "_SPLIT") {
     // amount, [baseAmount (retail)], overkill, school, resisted, blocked, absorbed, critical, glancing, crushing, isOffHand
-    const b = rest.length >= 11 ? 1 : 0;
+    const b = hasBaseAmount(rest) ? 1 : 0;
     ev.amount = num(rest[0]) ?? 0;
     ev.overkill = Math.max(0, num(rest[1 + b]) ?? 0);
     ev.resisted = num(rest[3 + b]);
