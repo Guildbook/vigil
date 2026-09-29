@@ -2,16 +2,23 @@ import { mkdtempSync, rmSync, utimesSync, writeFileSync, readdirSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MEDIA_TTL_MS, MediaCache, parseMediaUrl, SpellIcons, upstreamUrl, upstreamUrls } from "../src/core/media";
+import { LOOKUP_MISS_TTL_MS, MEDIA_TTL_MS, MediaCache, parseMediaUrl, SpellIconLookup, SpellIcons, upstreamUrl, upstreamUrls } from "../src/core/media";
 
 const icons = new SpellIcons();
 
-describe("SpellIcons (generated Classic Era data)", () => {
+describe("SpellIcons (generated Classic Era and TBC data)", () => {
   it("knows class and boss spell icons by ID", () => {
     expect(icons.byId(7386)).toBe("ability_warrior_sunder");
     expect(icons.byId(20566)).toBe("spell_fire_soulburn");
     expect(icons.byId(20475)).toBe("inv_enchant_essenceastralsmall");
     expect(icons.byId(999_999_999)).toBeNull();
+  });
+
+  it("knows TBC spells", () => {
+    expect(icons.byId(35395)).toBe("spell_holy_crusaderstrike");
+    expect(icons.byId(31892)).toBe("spell_holy_sealofblood");
+    expect(icons.byId(33878)).toBe("ability_druid_mangle2");
+    expect(icons.classOf(35395)).toBe("paladin");
   });
 
   it("finds class spells by name, ignoring case and rank", () => {
@@ -47,11 +54,17 @@ describe("vigil-media URLs", () => {
     expect(at("vigil-media://npc/zoom/8570")).toBe("https://render.worldofwarcraft.com/us/npcs/zoom/creature-display-8570.jpg");
   });
 
-  it("answers unknown spells with nothing to fetch (the fallback icon)", () => {
+  it("answers unknown spells with nothing to fetch, keeping the ID for a lookup", () => {
     const req = parseMediaUrl("vigil-media://spell/36/999999", icons);
-    expect(req).toEqual({ kind: "icon", size: 36, icon: null });
+    expect(req).toEqual({ kind: "icon", size: 36, icon: null, spellId: 999999 });
     expect(upstreamUrl(req!)).toBeNull();
     expect(upstreamUrls(req!)).toEqual([]);
+  });
+
+  it("falls back to the spell's name when the map lacks its ID", () => {
+    expect(parseMediaUrl("vigil-media://spell/36/999999?name=Sunder%20Armor", icons)).toEqual({ kind: "icon", size: 36, icon: "ability_warrior_sunder" });
+    expect(parseMediaUrl("vigil-media://spell/36/7386?name=Frostbolt", icons)).toEqual({ kind: "icon", size: 36, icon: "ability_warrior_sunder" });
+    expect(parseMediaUrl("vigil-media://spell/36/999999?name=Nope", icons)).toEqual({ kind: "icon", size: 36, icon: null, spellId: 999999 });
   });
 
   it("falls back from a missing portrait to the large render", () => {
@@ -142,5 +155,78 @@ describe("MediaCache", () => {
     offline = false;
     expect(await cache.get(URL1)).not.toBeNull();
     expect(calls).toEqual([missing, URL1, URL1]);
+  });
+});
+
+describe("SpellIconLookup", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(os.tmpdir(), "vigil-lookup-"));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  function fakeFetch(respond: (url: string) => Response | Error) {
+    const calls: string[] = [];
+    const f = (async (input: string | URL | Request) => {
+      const url = String(input);
+      calls.push(url);
+      const r = respond(url);
+      if (r instanceof Error) throw r;
+      return r;
+    }) as typeof fetch;
+    return { f, calls };
+  }
+
+  it("asks Wowhead for TBC then Classic Era data by ID, and caches the answer on disk", async () => {
+    const { f, calls } = fakeFetch((url) => (url.includes("dataEnv=5") ? json({ error: "Entity not found" }, 404) : json({ icon: "Spell_Holy_CrusaderStrike" })));
+    const lookup = new SpellIconLookup({ dir, fetch: f, minIntervalMs: 0 });
+    const [a, b] = await Promise.all([lookup.resolve(407676), lookup.resolve(407676)]);
+    expect(a).toBe("spell_holy_crusaderstrike");
+    expect(b).toBe("spell_holy_crusaderstrike");
+    expect(await new SpellIconLookup({ dir, fetch: f }).resolve(407676)).toBe("spell_holy_crusaderstrike");
+    expect(calls).toEqual([
+      "https://nether.wowhead.com/tooltip/spell/407676?dataEnv=5",
+      "https://nether.wowhead.com/tooltip/spell/407676?dataEnv=4",
+    ]);
+  });
+
+  it("remembers spells nobody knows for a week, and ignores icon names that aren't safe", async () => {
+    let now = Date.now();
+    const { f, calls } = fakeFetch((url) => (url.includes("/1?") ? json({ icon: "../../etc" }) : json({ error: "ID is out of range" }, 404)));
+    const lookup = () => new SpellIconLookup({ dir, fetch: f, now: () => now, minIntervalMs: 0 });
+    expect(await lookup().resolve(1)).toBeNull();
+    expect(await lookup().resolve(99_999_999)).toBeNull();
+    expect(await lookup().resolve(99_999_999)).toBeNull();
+    expect(calls).toHaveLength(4);
+    now += LOOKUP_MISS_TTL_MS + 1000;
+    expect(await lookup().resolve(99_999_999)).toBeNull();
+    expect(calls).toHaveLength(6);
+    expect(await lookup().resolve(0)).toBeNull();
+    expect(await lookup().resolve(-5)).toBeNull();
+    expect(calls).toHaveLength(6);
+  });
+
+  it("gives up quietly when offline, pauses, then tries again without having cached the failure", async () => {
+    let now = 1_000_000;
+    let offline = true;
+    const { f, calls } = fakeFetch(() => (offline ? new Error("offline") : json({ icon: "spell_holy_sealofblood" })));
+    const lookup = new SpellIconLookup({ dir, fetch: f, now: () => now, minIntervalMs: 0, backoffMs: 60_000 });
+    expect(await lookup.resolve(31892)).toBeNull();
+    offline = false;
+    expect(await lookup.resolve(31892)).toBeNull();
+    expect(calls).toHaveLength(1);
+    now += 61_000;
+    expect(await lookup.resolve(31892)).toBe("spell_holy_sealofblood");
+    expect(readdirSync(dir)).toEqual(["spell-31892.json"]);
+  });
+
+  it("backs off when Wowhead is overloaded", async () => {
+    const { f, calls } = fakeFetch(() => json({}, 429));
+    const lookup = new SpellIconLookup({ dir, fetch: f, minIntervalMs: 0 });
+    expect(await lookup.resolve(20243)).toBeNull();
+    expect(await lookup.resolve(20244)).toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(readdirSync(dir)).toEqual([]);
   });
 });

@@ -1,9 +1,11 @@
-// Regenerates src/data/spell-icons.json and src/data/boss-spells.json from Blizzard's WoW Classic Era client
-// tables, exported as CSV by wago.tools (a mirror of the game's DB2 files). No credentials needed.
+// Regenerates src/data/spell-icons.json and src/data/boss-spells.json from Blizzard's WoW Classic Era and TBC
+// Anniversary client tables, exported as CSV by wago.tools (a mirror of the game's DB2 files). No credentials needed.
 //
-//   pnpm icons:generate                      # default build (CLASSIC_ERA_BUILD)
-//   pnpm icons:generate --build 1.15.9.69722
-//   pnpm icons:generate --verify-cdn         # also check every icon on Blizzard's render CDN (about 1,700 requests)
+//   pnpm icons:generate                      # default builds (CLASSIC_ERA_BUILD, then TBC_ANNIVERSARY_BUILD)
+//   pnpm icons:generate --build 1.15.9.69722 --build 2.5.6.69795
+//   pnpm icons:generate --verify-cdn         # also check every icon on Blizzard's render CDN (about 2,000 requests)
+//
+// Earlier builds win where the clients disagree. boss-spells.json uses the first build's spell names.
 //
 // With BATTLENET_CLIENT_ID and BATTLENET_CLIENT_SECRET in the environment it also compares the boss spells'
 // icons with the Game Data API's spell media (retail namespace; Classic namespaces have no spell media). The
@@ -13,20 +15,17 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { BOSSES } from "../src/data/bosses";
-import { buildIconData, CLASSIC_ERA_BUILD, iconFromMedia, parseCsv, type Row } from "./icon-data";
+import { buildIconData, CLASSIC_ERA_BUILD, iconFromMedia, mergeIconData, parseCsv, TBC_ANNIVERSARY_BUILD, type Row } from "./icon-data";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const out = path.resolve(here, "..", "src", "data");
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(name);
-const option = (name: string) => {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-};
-const build = option("--build") ?? CLASSIC_ERA_BUILD;
-const cacheDir = path.join(os.tmpdir(), `vigil-db2-${build}`);
+const options = (name: string) => args.flatMap((a, i) => (a === name && args[i + 1] ? [args[i + 1]!] : []));
+const builds = options("--build").length ? options("--build") : [CLASSIC_ERA_BUILD, TBC_ANNIVERSARY_BUILD];
 
-async function table(name: string): Promise<Row[]> {
+async function table(build: string, name: string): Promise<Row[]> {
+  const cacheDir = path.join(os.tmpdir(), `vigil-db2-${build}`);
   mkdirSync(cacheDir, { recursive: true });
   const file = path.join(cacheDir, `${name}.csv`);
   if (!existsSync(file)) {
@@ -84,13 +83,17 @@ async function blizzardCheck(ids: number[], icons: (id: number) => string | unde
 }
 
 async function main() {
-  const [manifest, spellMisc, spellNames, classOptions] = await Promise.all(
-    ["ManifestInterfaceData", "SpellMisc", "SpellName", "SpellClassOptions"].map(table),
-  );
-  const data = buildIconData(
-    { manifest: manifest!, spellMisc: spellMisc!, spellNames: spellNames!, classOptions: classOptions! },
-    { source: "World of Warcraft Classic Era client tables (SpellMisc, ManifestInterfaceData, SpellName, SpellClassOptions)", build },
-  );
+  const source = "World of Warcraft Classic client tables (SpellMisc, ManifestInterfaceData, SpellName, SpellClassOptions)";
+  const perBuild = [];
+  for (const build of builds) {
+    const [manifest, spellMisc, spellNames, classOptions] = await Promise.all(
+      ["ManifestInterfaceData", "SpellMisc", "SpellName", "SpellClassOptions"].map((name) => table(build, name)),
+    );
+    const part = buildIconData({ manifest: manifest!, spellMisc: spellMisc!, spellNames: spellNames!, classOptions: classOptions! }, { source, build });
+    console.log(`${build}: ${Object.keys(part.spells).length} spells.`);
+    perBuild.push({ build, part, spellNames: spellNames! });
+  }
+  const data = mergeIconData(perBuild.map((b) => b.part), { source, build: builds.join(" + ") });
   const previous = existsSync(path.join(out, "spell-icons.json"))
     ? (JSON.parse(readFileSync(path.join(out, "spell-icons.json"), "utf8")) as { missing?: string[] })
     : null;
@@ -98,11 +101,12 @@ async function main() {
   writeFileSync(path.join(out, "spell-icons.json"), `${JSON.stringify(data)}\n`);
   console.log(`spell-icons.json: ${Object.keys(data.spells).length} spells, ${data.icons.length} icons, ${data.missing.length} missing on the CDN.`);
 
-  const names = new Map(spellNames!.map((r) => [Number(r.ID), r.Name_lang ?? ""]));
+  const first = perBuild[0]!;
+  const names = new Map(first.spellNames.map((r) => [Number(r.ID), r.Name_lang ?? ""]));
   const bossIds = [...new Set(BOSSES.flatMap((b) => b.abilities.flatMap((a) => a.spellIds)))].sort((a, b) => a - b);
   const bossSpells: Record<string, string | null> = {};
   for (const id of bossIds) bossSpells[id] = names.get(id) ?? null;
-  writeFileSync(path.join(out, "boss-spells.json"), `${JSON.stringify({ build, spells: bossSpells }, null, 2)}\n`);
+  writeFileSync(path.join(out, "boss-spells.json"), `${JSON.stringify({ build: first.build, spells: bossSpells }, null, 2)}\n`);
   const unknown = bossIds.filter((id) => !names.has(id));
   console.log(`boss-spells.json: ${bossIds.length} spells${unknown.length ? `, not in the client: ${unknown.join(", ")}` : ""}.`);
 

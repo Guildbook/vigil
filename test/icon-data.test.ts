@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildIconData, iconFromMedia, iconName, parseCsv } from "../scripts/icon-data";
+import { buildIconData, iconFromMedia, iconName, mergeIconData, parseCsv } from "../scripts/icon-data";
 
 describe("icon data generation", () => {
   it("parses wago.tools CSV exports, quotes and all", () => {
@@ -51,6 +51,17 @@ describe("icon data generation", () => {
     expect(data.names).toEqual({ "sunder armor": 0 });
     expect(data.classes.warrior).toEqual([7386, 11597]);
     expect(data.classes.mage).toEqual([]);
+  });
+
+  it("merges several clients' data, earlier builds first", () => {
+    const era = { source: "t", build: "1", icons: ["a", "b"], spells: { 1: 0, 2: 1 }, names: { strike: 0 }, classes: { paladin: [1] } as never, missing: [] };
+    const tbc = { source: "t", build: "2", icons: ["b", "c"], spells: { 1: 1, 3: 1 }, names: { strike: 1, seal: 1 }, classes: { paladin: [3], warrior: [1] } as never, missing: [] };
+    const data = mergeIconData([era, tbc], { source: "t", build: "1 + 2" });
+    expect(data.icons).toEqual(["a", "b", "c"]);
+    expect(data.spells).toEqual({ 1: 0, 2: 1, 3: 2 });
+    expect(data.names).toEqual({ strike: 0, seal: 2 });
+    expect(data.classes.paladin).toEqual([1, 3]);
+    expect(data.classes.warrior).toEqual([]);
   });
 
   it("reads the icon from a Game Data API spell media document", () => {
