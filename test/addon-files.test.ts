@@ -101,8 +101,8 @@ describe("bundled Vigil addon files", () => {
       }
     });
     expect(uses.sort()).toEqual(["pcall/1", "pcall/2", "type/1"]);
-    expect(luaText).toMatch(/pcall\(LoggingCombat\)\n/);
-    expect(luaText).toMatch(/pcall\(LoggingCombat, want\)\n/);
+    expect(luaText).toMatch(/pcall\(LoggingCombat\)\r?\n/);
+    expect(luaText).toMatch(/pcall\(LoggingCombat, want\)\r?\n/);
   });
 
   it("only uses OnUpdate for dragging the minimap button", () => {
