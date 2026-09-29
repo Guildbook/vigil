@@ -70,7 +70,7 @@ export function trayMenu(s: TrayState): TrayItem[] {
     { type: "action", action: "open-site", label: "Open guild site", enabled: Boolean(s.pairing.paired && s.server.siteUrl) },
     { type: "separator" },
     s.update.state === "ready"
-      ? { type: "action", action: "install-update", label: `Restart to update to ${s.update.version}` }
+      ? { type: "action", action: "install-update", label: `Restart to update to ${APP_NAME} ${s.update.version}` }
       : { type: "action", action: "check-updates", label: "Check for updates..." },
     { type: "action", action: "quit", label: "Quit Vigil" },
   );

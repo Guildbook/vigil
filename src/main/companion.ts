@@ -300,11 +300,11 @@ export class Companion {
 
   installAddonTo(clientDir: string): { ok: boolean; message: string } {
     const source = this.addonSource();
-    if (!source) return { ok: false, message: "The Vigil addon is not bundled with this build." };
+    if (!source) return { ok: false, message: "The in-game addon is not bundled with this build." };
     try {
       const { version } = installAddon(source.path, clientDir);
       this.push();
-      return { ok: true, message: `Vigil ${version} installed. Enable it at character select, then /reload.` };
+      return { ok: true, message: `In-game addon v${version} installed. Enable it at character select, then /reload.` };
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : String(err) };
     }

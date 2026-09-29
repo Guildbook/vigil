@@ -1,6 +1,7 @@
 import { CLASS_INFO, FACTION_LABELS, type Faction, type WowClass } from "@/lib/game";
 import type { Callout, LiveFight } from "@/lib/vigil/live";
 import type { Boss, BossAbility, Instance } from "../data/bosses";
+import { ADDON_ACTION_LABEL, addonStatus } from "../core/addon-status";
 import type { GroupAbilityView, GroupFightView, GroupPlayerView } from "../core/group";
 import { bossByKey, bossesByInstance, instanceById, searchBosses, type InstanceGroup } from "../core/intel";
 import type { AppState, CompanionBridge, FightSummary, Identity, Settings } from "../core/protocol";
@@ -602,13 +603,14 @@ function renderSettings(s: AppState) {
     .join("");
   const addon = s.addon.targets.length
     ? s.addon.targets
-        .map(
-          (t) => `
+        .map((t) => {
+          const status = addonStatus(t.installed, s.addon.bundled);
+          return `
         <div class="row addon">
-          <div class="grow"><div>${esc(t.label)}</div><div class="path">${t.installed ? `Installed: ${esc(t.installed)}` : "Not installed"}</div></div>
-          <button data-addon="${esc(t.clientDir)}">${t.installed ? "Update" : "Install"}</button>
-        </div>`,
-        )
+          <div class="grow"><div>${esc(t.label)}</div><div class="path">${esc(status.text)}</div></div>
+          ${status.action ? `<button data-addon="${esc(t.clientDir)}">${ADDON_ACTION_LABEL[status.action]}</button>` : ""}
+        </div>`;
+        })
         .join("")
     : `<p class="empty">No World of Warcraft install found.</p>`;
 
@@ -646,12 +648,13 @@ function renderSettings(s: AppState) {
       ${s.canOpenAtLogin ? `<label class="check"><input type="checkbox" id="open-at-login" ${set.openAtLogin ? "checked" : ""} /> Start Vigil when I log in</label>` : ""}
     </section>
     <section class="panel">
-      <h2>Vigil addon</h2>
-      <p class="note">Optional. Bundled version ${esc(s.addon.bundled ?? "unavailable")}.</p>
+      <h2>In-game addon</h2>
+      <p class="note">Optional. It has its own version, separate from the app, and only updates when it changes.</p>
+      ${s.addon.bundled ? "" : `<p class="note">This build does not include the in-game addon.</p>`}
       ${addon}
       ${msg(addonMessage)}
     </section>
-    <p class="note center">Vigil ${esc(s.version)}</p>`;
+    <p class="note center">Vigil ${esc(s.version)} (desktop app)</p>`;
 }
 
 function render() {

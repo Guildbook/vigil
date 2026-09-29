@@ -102,7 +102,7 @@ describe("trayMenu", () => {
     const l = labels(state({ uploadsPaused: true, update: { state: "ready", version: "0.2.0" } }));
     expect(l).toContain("Resume uploads");
     expect(l).not.toContain("Pause uploads");
-    expect(l).toContain("Restart to update to 0.2.0");
+    expect(l).toContain("Restart to update to Vigil 0.2.0");
     expect(l).not.toContain("Check for updates...");
   });
 
