@@ -102,7 +102,7 @@ function statusLine(s: AppState) {
   const file = e.status.file.split(/[\\/]/).pop();
   const who = e.player ? `${esc(e.player.name)}${e.player.level ? ` (${e.player.level})` : ""}` : "detecting character";
   const model = e.model ? esc(e.model.label) : s.settings.modelId === "auto" ? "detecting rotation" : "";
-  return `<span class="dot live"></span>${who}${model ? `, ${model}` : ""} <span title="${esc(e.status.file)}">in ${esc(file)}</span>`;
+  return `<span class="dot live"></span>${who}${model ? `, ${model}` : ""} <span class="file" title="${esc(e.status.file)}">in ${esc(file)}</span>`;
 }
 
 /** Top right: the recording character's class icon, with the faction as a badge when it is known. */
@@ -113,18 +113,61 @@ function renderIdentity(id: Identity | null) {
   return `<div class="identity" title="${esc(title)}">${classIcon(id.wowClass, 26)}${id.faction ? factionIcon(id.faction, 13) : ""}</div>`;
 }
 
+/* Interface icons: 16px strokes in currentColor. Shapes with class "fill" fill in when their button is on. */
+const ICON_PATHS = {
+  live: `<path d="M1.5 8.5h3l2-5 3 9 2-4h3" />`,
+  intel: `<path d="M8 4.2C6.6 3.2 4.6 2.7 2 2.7v9.8c2.6 0 4.6.5 6 1.5 1.4-1 3.4-1.5 6-1.5V2.7c-2.6 0-4.6.5-6 1.5Z" /><path d="M8 4.2V14" />`,
+  settings: `<path d="M2 4h6.7M12.3 4H14M2 8h1.7M7.3 8H14M2 12h7.2M12.8 12H14" /><circle cx="10.5" cy="4" r="1.8" /><circle cx="5.5" cy="8" r="1.8" /><circle cx="11" cy="12" r="1.8" />`,
+  pin: `<path class="fill" d="M5.5 2h5M6.5 2v4L4 9h8L9.5 6V2" /><path d="M8 9v5" />`,
+  shrink: `<path d="M2.5 6.5h4v-4M13.5 9.5h-4v4M6.5 6.5 2 2M9.5 9.5 14 14" />`,
+  expand: `<path d="M9.5 2h4.5v4.5M6.5 14H2V9.5M14 2 9 7M2 14l5-5" />`,
+  back: `<path d="M10 3 5 8l5 5" />`,
+};
+
+function icon(name: keyof typeof ICON_PATHS) {
+  return `<svg class="ui-ic" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICON_PATHS[name]}</svg>`;
+}
+
+type Tab = "live" | "intel" | "settings";
+const TABS: { id: Tab; label: string; title: string }[] = [
+  { id: "live", label: "Live", title: "Live fight" },
+  { id: "intel", label: "Intel", title: "Boss intel" },
+  { id: "settings", label: "Settings", title: "Settings" },
+];
+
+/** The fight detail belongs to Live: it opens from the fight list there. */
+const activeTab = (): Tab => (view === "fight" ? "live" : view);
+
+function renderTabs() {
+  const tab = activeTab();
+  return `<nav class="tabs" aria-label="Views">${TABS.map(
+    (t) =>
+      `<button class="tab ${t.id === tab ? "on" : ""}" data-view="${t.id}" title="${t.title}"${t.id === tab ? ` aria-current="page"` : ""}>${icon(t.id)}<span class="tab-label">${t.label}</span></button>`,
+  ).join("")}</nav>`;
+}
+
 function renderTopbar(s: AppState) {
   const compact = s.settings.mode === "compact";
+  const pinned = s.settings.alwaysOnTop;
+  const pinLabel = pinned ? "Stop keeping on top" : "Keep on top";
+  const modeLabel = compact ? "Full view" : "Compact view";
   return `
     <header class="topbar">
-      <h1>VIGIL</h1>
-      <div class="status">${statusLine(s)}</div>
-      ${compact ? "" : `<button class="icon ${view === "intel" ? "on" : ""}" data-act="intel" title="Boss intel">${view === "intel" ? "Done" : "Intel"}</button>`}
-      <button class="icon ${s.settings.alwaysOnTop ? "on" : ""}" data-act="pin" title="Keep on top">Pin</button>
-      <button class="icon" data-act="mode" title="${compact ? "Full view" : "Compact view"}">${compact ? "Full" : "Compact"}</button>
-      <button class="icon ${view === "settings" ? "on" : ""}" data-act="settings" title="Settings">${view === "settings" ? "Done" : "Settings"}</button>
-      ${renderIdentity(s.identity)}
+      <div class="topbar-row">
+        <h1>VIGIL</h1>
+        <div class="status">${statusLine(s)}</div>
+        <div class="toggles">
+          <button class="icon-btn ${pinned ? "on" : ""}" data-act="pin" title="${pinLabel}" aria-label="Keep on top" aria-pressed="${pinned}">${icon("pin")}</button>
+          <button class="icon-btn" data-act="mode" title="${modeLabel}" aria-label="${modeLabel}">${icon(compact ? "expand" : "shrink")}</button>
+        </div>
+        ${renderIdentity(s.identity)}
+      </div>
+      ${compact ? "" : renderTabs()}
     </header>`;
+}
+
+function backBar(act: string, label: string) {
+  return `<div class="back-bar"><button class="back" data-act="${act}">${icon("back")}<span>${label}</span></button></div>`;
 }
 
 /** One quiet line under the header when a new version is waiting. */
@@ -437,10 +480,11 @@ function renderMySpells(g: GroupFightView) {
 function renderFightDetail(s: AppState) {
   const f = s.fights.find((x) => x.id === detailId) ?? null;
   const g = (f?.groupId ? s.groupFights.find((x) => x.id === f.groupId) : s.groupFights.find((x) => x.id === detailId)) ?? null;
-  if (!f && !g) return `<section class="panel"><p class="empty">This fight is no longer in memory.</p></section>`;
+  const back = backBar("close-detail", "Recent fights");
+  if (!f && !g) return back + `<section class="panel"><p class="empty">This fight is no longer in memory.</p></section>`;
   const boss = g?.boss ? bossByKey(g.boss.key) : null;
   const result = g?.result === "kill" ? "Kill" : g?.result === "wipe" ? "Wipe" : null;
-  const head = `
+  const head = `${back}
     <section class="panel">
       <div class="fight-head">
         ${boss ? portrait(boss.displayId, 56) : ""}
@@ -452,7 +496,6 @@ function renderFightDetail(s: AppState) {
         </div>
         ${f ? `<div class="score ${tone(f.score)}">${Math.round(f.score)}<small>score</small></div>` : ""}
       </div>
-      <div class="row end"><button data-act="close-detail">Close</button></div>
     </section>`;
   if (!g) return head + `<section class="panel"><p class="empty">No group data was recorded for this fight.</p></section>`;
   const intel =
@@ -470,10 +513,10 @@ function instanceMeta(i: Instance) {
   return i.levels ? `Levels ${i.levels[0]}-${i.levels[1]}, ${i.size}-player` : `${i.size}-player`;
 }
 
-function bossRow(b: Boss, open: Boss | null, where = false) {
+function bossRow(b: Boss, where = false) {
   return `
       <li>
-        <button class="boss-row ${open?.key === b.key ? "on" : ""}" data-boss="${esc(b.key)}">
+        <button class="boss-row" data-boss="${esc(b.key)}">
           ${portrait(b.displayId, 32)}
           <span class="grow">${esc(b.name)}${where ? `<span class="where">${esc(instanceById(b.instance).name)}</span>` : ""}</span>
           ${b.rare ? `<span class="pill">Rare</span>` : ""}
@@ -488,18 +531,21 @@ function bossRow(b: Boss, open: Boss | null, where = false) {
       </li>`;
 }
 
-function bossList(g: InstanceGroup, open: Boss | null) {
+function bossList(g: InstanceGroup) {
   return `<h3 class="sub-h">${esc(g.instance.name)} <span class="muted small">${instanceMeta(g.instance)}</span></h3>
-      <ul class="boss-list">${g.bosses.map((b) => bossRow(b, open)).join("")}</ul>`;
+      <ul class="boss-list">${g.bosses.map((b) => bossRow(b)).join("")}</ul>`;
 }
+
+const INTEL_CREDIT = `<p class="note center">Spell data from Blizzard's World of Warcraft Classic Era client; icons and portraits from Blizzard. World of Warcraft is a trademark of Blizzard Entertainment. Vigil is not affiliated with Blizzard.</p>`;
 
 function renderIntel(s: AppState) {
   const boss = intelBoss ? bossByKey(intelBoss) : null;
+  if (boss) return backBar("intel-back", intelQuery.trim() ? "Search results" : "All bosses") + renderBossDetail(s, boss) + INTEL_CREDIT;
   const query = intelQuery.trim();
   let body: string;
   if (query) {
     const found = searchBosses(query);
-    body = found.length ? found.map((g) => bossList(g, boss)).join("") : `<p class="empty">No boss, dungeon or ability matches "${esc(query)}".</p>`;
+    body = found.length ? found.map((g) => bossList(g)).join("") : `<p class="empty">No boss, dungeon or ability matches "${esc(query)}".</p>`;
   } else {
     const groups = bossesByInstance(intelKind);
     const current = groups.find((g) => g.instance.id === intelInstance[intelKind]) ?? groups[0]!;
@@ -514,17 +560,15 @@ function renderIntel(s: AppState) {
           }</button>`,
       )
       .join("");
-    body = `<div class="seg kinds">${kinds}</div><div class="chips">${chips}</div>${bossList(current, boss)}`;
+    body = `<div class="seg kinds">${kinds}</div><div class="chips">${chips}</div>${bossList(current)}`;
   }
-  const detail = boss ? renderBossDetail(s, boss) : "";
   return `
     <section class="panel">
       <div class="panel-head"><h2>Boss intel</h2></div>
-      <input id="intel-search" class="intel-search" type="search" value="${esc(intelQuery)}" placeholder="Search bosses, dungeons or abilities" spellcheck="false" autocomplete="off" />
+      <input id="intel-search" class="intel-search" type="search" value="${esc(intelQuery)}" placeholder="Search bosses, dungeons or abilities" aria-label="Search boss intel" spellcheck="false" autocomplete="off" />
       ${body}
     </section>
-    ${detail}
-    <p class="note center">Spell data from Blizzard's World of Warcraft Classic Era client; icons and portraits from Blizzard. World of Warcraft is a trademark of Blizzard Entertainment. Vigil is not affiliated with Blizzard.</p>`;
+    ${INTEL_CREDIT}`;
 }
 
 function renderBossDetail(s: AppState, boss: Boss) {
@@ -657,16 +701,43 @@ function renderSettings(s: AppState) {
     <p class="note center">Vigil ${esc(s.version)} (desktop app)</p>`;
 }
 
+/** Switch views; a new view starts scrolled to the top. */
+function go(next: typeof view) {
+  if (next === "settings" && view !== "settings") {
+    pairMessage = null;
+    addonMessage = null;
+  }
+  if (next !== "fight") detailId = null;
+  view = next;
+  scrollToTop = true;
+}
+
+let scrollToTop = false;
+
+/** The focused control's data attribute, so keyboard focus survives the re-render that replaces it. */
+function focusKey(): string | null {
+  const el = document.activeElement;
+  if (!(el instanceof HTMLButtonElement) || !root.contains(el)) return null;
+  for (const name of ["view", "act", "detail", "boss", "kind", "instance", "meter", "intel", "group"]) {
+    const v = el.dataset[name];
+    if (v) return `button[data-${name}="${CSS.escape(v)}"]`;
+  }
+  return null;
+}
+
 function render() {
   if (!state) return;
   document.body.classList.toggle("compact", state.settings.mode === "compact");
   const scrollEl = root.querySelector(".scroll");
-  const scrollTop = scrollEl?.scrollTop ?? 0;
+  const scrollTop = scrollToTop ? 0 : (scrollEl?.scrollTop ?? 0);
+  scrollToTop = false;
+  const focused = focusKey();
   const body =
     view === "settings" ? renderSettings(state) : view === "intel" ? renderIntel(state) : view === "fight" ? renderFightDetail(state) : renderLive(state);
   root.innerHTML = renderTopbar(state) + renderUpdate(state) + `<main class="scroll">${body}</main>`;
   const next = root.querySelector(".scroll");
   if (next) next.scrollTop = scrollTop;
+  if (focused) root.querySelector<HTMLElement>(focused)?.focus({ preventScroll: true });
   // The CSP forbids inline style attributes; set bar geometry through the DOM instead.
   for (const el of root.querySelectorAll<HTMLElement>("[data-width]")) el.style.width = `${el.dataset.width}%`;
   for (const el of root.querySelectorAll<HTMLElement>("[data-left]")) el.style.left = `${el.dataset.left}%`;
@@ -692,9 +763,8 @@ root.addEventListener("click", async (e) => {
   if (el.dataset.open) return void api.openExternal(el.dataset.open);
   if (el.dataset.retry) return void api.retryUpload(el.dataset.retry);
   if (el.dataset.detail || el.dataset.group) {
+    go("fight");
     detailId = el.dataset.detail ?? el.dataset.group!;
-    view = "fight";
-    root.querySelector(".scroll")?.scrollTo(0, 0);
     return render();
   }
   if (el.dataset.meter) {
@@ -709,7 +779,7 @@ root.addEventListener("click", async (e) => {
       intelBoss = boss.key;
       intelQuery = "";
     }
-    view = "intel";
+    go("intel");
     return render();
   }
   if (el.dataset.kind) {
@@ -723,7 +793,12 @@ root.addEventListener("click", async (e) => {
     return render();
   }
   if (el.dataset.boss) {
-    intelBoss = intelBoss === el.dataset.boss ? null : el.dataset.boss;
+    intelBoss = el.dataset.boss;
+    scrollToTop = true;
+    return render();
+  }
+  if (el.dataset.view) {
+    go(el.dataset.view as Tab);
     return render();
   }
   if (el.dataset.addon) {
@@ -737,19 +812,15 @@ root.addEventListener("click", async (e) => {
       await update({ alwaysOnTop: !state.settings.alwaysOnTop });
       break;
     case "mode":
+      if (state.settings.mode !== "compact") go("live");
       await update({ mode: state.settings.mode === "compact" ? "full" : "compact" });
       break;
-    case "intel":
-      view = view === "intel" ? "live" : "intel";
-      break;
     case "close-detail":
-      view = "live";
-      detailId = null;
+      go("live");
       break;
-    case "settings":
-      view = view === "settings" ? "live" : "settings";
-      pairMessage = null;
-      addonMessage = null;
+    case "intel-back":
+      intelBoss = null;
+      scrollToTop = true;
       break;
     case "pair": {
       const code = (document.getElementById("pair-code") as HTMLInputElement).value;
@@ -823,11 +894,24 @@ root.addEventListener("change", async (e) => {
   render();
 });
 
-api.onPairLink((link) => {
+api.onPairLink(async (link) => {
   pairLink = link;
-  view = "settings";
+  go("settings");
   pairMessage = { ok: true, text: "Pairing code received. Press Pair to connect." };
+  if (state?.settings.mode === "compact") await update({ mode: "full" });
   render();
+});
+
+/** Esc goes back to Live from any other view; a search box with text clears itself first. */
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || e.defaultPrevented || view === "live" || !state) return;
+  const t = e.target as HTMLElement;
+  if (t instanceof HTMLInputElement && t.type === "search" && t.value) return;
+  if (t instanceof HTMLSelectElement) return;
+  e.preventDefault();
+  go("live");
+  render();
+  root.querySelector<HTMLElement>('button[data-view="live"]')?.focus({ preventScroll: true });
 });
 
 api.onState(onState);
