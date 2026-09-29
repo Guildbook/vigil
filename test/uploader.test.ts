@@ -63,10 +63,41 @@ describe("Uploader", () => {
     h.up.enqueue("f2", boar!);
     await h.flush();
     await h.flush();
-    expect(h.statuses.filter(([id]) => id === "f1").at(-1)![1]).toEqual({ state: "failed", error: "bad format", retrying: false });
+    expect(h.statuses.filter(([id]) => id === "f1").at(-1)![1]).toEqual({
+      state: "failed",
+      error: "Not uploaded: the site rejected this report (bad format). Check for a Vigil update.",
+      retrying: false,
+      final: true,
+    });
     expect(h.statuses.filter(([id]) => id === "f2").at(-1)![1]).toEqual({ state: "failed", error: "revoked", retrying: false });
     expect(h.unauthorized()).toBe("revoked");
     expect(h.timers).toEqual([]);
+  });
+
+  it("names the field when the site's schema rejects a report, without the site's reload advice", async () => {
+    const h = harness([json(400, { error: "The report was not in a format Vigil understands. Reload and try again." })]);
+    h.up.enqueue("f1", boar!);
+    await h.flush();
+    expect(h.statuses.at(-1)![1]).toMatchObject({
+      error: "Not uploaded: the site rejected this report (The report was not in a format Vigil understands). Check for a Vigil update.",
+      final: true,
+    });
+  });
+
+  it("does not send a report the site's schema would refuse, and says which field is wrong", async () => {
+    const h = harness([json(201, { url: "u" })]);
+    h.up.enqueue("bad", { ...boar!, player: { ...boar!.player, level: 1951 } });
+    h.up.enqueue("good", boar!);
+    await h.flush();
+    await h.flush();
+    expect(h.calls).toHaveLength(1);
+    expect(h.statuses.filter(([id]) => id === "bad").at(-1)![1]).toEqual({
+      state: "failed",
+      error: "Not uploaded: this report failed the site's format check (player.level: Too big: expected number to be <=100). Check for a Vigil update.",
+      retrying: false,
+      final: true,
+    });
+    expect(h.statuses.at(-1)).toEqual(["good", { state: "uploaded", url: "u" }]);
   });
 
   it("holds the queue while paused and sends it on resume", async () => {
@@ -171,5 +202,25 @@ describe("a Stockade run without ENCOUNTER_START", () => {
     expect(promoted.fight).toMatchObject({ kind: "boss", label: "Bruegal Ironknuckle" });
     expect(promoted.fight.encounter).toBeUndefined();
     expect(skipReason({ ...promoted, fight: { ...promoted.fight, durationMs: 5000 } }, settings, true)).toBeNull();
+  });
+});
+
+describe("Uploader and the guild's game version", () => {
+  it("passes on the site's warning for a log from another game", async () => {
+    const warning = "This log is from TBC Anniversary; Order is a WoW: Forever guild. The report was saved with a warning.";
+    const h = harness([json(201, { id: "r1", url: "u", gameVersion: "anniversary", versionMismatch: true, warning })]);
+    h.up.enqueue("f1", boar!);
+    await h.flush();
+    expect(h.statuses.at(-1)![1]).toEqual({ state: "uploaded", url: "u", warning });
+  });
+
+  it("treats a refused mismatch as final, without a retry", async () => {
+    const error = "This log is from TBC Anniversary; Order is a WoW: Forever guild. Pair Vigil with your TBC Anniversary guild.";
+    const h = harness([json(409, { error, code: "version_mismatch" })]);
+    h.up.enqueue("f1", boar!);
+    await h.flush();
+    expect(h.statuses.at(-1)![1]).toEqual({ state: "failed", error: `Not uploaded: ${error}`, retrying: false, final: true });
+    expect(h.timers).toHaveLength(0);
+    expect(h.up.pending).toBe(0);
   });
 });

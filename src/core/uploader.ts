@@ -1,4 +1,4 @@
-import type { FightReport } from "@/lib/vigil/report";
+import { fightReportSchema, type FightReport } from "@/lib/vigil/report";
 import type { Boss } from "../data/bosses";
 import { bossAmong } from "./intel";
 import type { Settings, UploadState } from "./protocol";
@@ -74,6 +74,13 @@ export class Uploader {
     if (!job) return;
     const target = this.deps.target();
     if (!target) return;
+    const invalid = formatProblem(job.report);
+    if (invalid) {
+      this.queue.shift();
+      this.deps.onStatus(job.id, { state: "failed", error: `Not uploaded: ${invalid}. Check for a Vigil update.`, retrying: false, final: true });
+      void this.pump();
+      return;
+    }
     this.busy = true;
     this.deps.onStatus(job.id, { state: "uploading" });
     let retryIn: number | null = null;
@@ -83,10 +90,13 @@ export class Uploader {
         headers: { "content-type": "application/json", authorization: `Bearer ${target.token}` },
         body: JSON.stringify({ report: job.report, visibility: target.visibility, guild: target.guild }),
       });
-      const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string; code?: string; warning?: string | null };
       if (res.ok && body.url) {
         this.queue.shift();
-        this.deps.onStatus(job.id, { state: "uploaded", url: body.url });
+        this.deps.onStatus(job.id, { state: "uploaded", url: body.url, ...(body.warning ? { warning: body.warning } : {}) });
+      } else if (res.status === 409 && body.code === "version_mismatch") {
+        this.queue.shift();
+        this.deps.onStatus(job.id, { state: "failed", error: `Not uploaded: ${body.error ?? "this log is from another game than your guild's."}`, retrying: false, final: true });
       } else if (res.status === 401 || res.status === 403) {
         this.queue.shift();
         const error = body.error ?? "The site refused this companion.";
@@ -97,6 +107,11 @@ export class Uploader {
         retryIn = this.backoff(job);
         if (retryIn !== null && Number.isFinite(after) && after > 0) retryIn = after * 1000;
         this.deps.onStatus(job.id, { state: "failed", error: body.error ?? `Site error ${res.status}`, retrying: retryIn !== null });
+      } else if (res.status === 400) {
+        this.queue.shift();
+        const detail = body.error?.replace(/\s*Reload and try again\.?$/, "").replace(/\.$/, "");
+        const error = `Not uploaded: the site rejected this report${detail ? ` (${detail})` : ""}. Check for a Vigil update.`;
+        this.deps.onStatus(job.id, { state: "failed", error, retrying: false, final: true });
       } else {
         this.queue.shift();
         this.deps.onStatus(job.id, { state: "failed", error: body.error ?? `Upload refused (${res.status})`, retrying: false });
@@ -120,6 +135,14 @@ export class Uploader {
     }
     return ms;
   }
+}
+
+/** Why the site's report schema would refuse this report (the first field at fault), or null. */
+export function formatProblem(report: FightReport): string | null {
+  const parsed = fightReportSchema.safeParse(report);
+  if (parsed.success) return null;
+  const issue = parsed.error.issues[0];
+  return `this report failed the site's format check${issue ? ` (${issue.path.join(".") || "report"}: ${issue.message})` : ""}`;
 }
 
 /**

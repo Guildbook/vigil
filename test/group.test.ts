@@ -1,11 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CompanionEngine } from "../src/core/engine";
 import { factionFromClasses, GroupObserver, GroupReader, type GroupFightView } from "../src/core/group";
 import { SpellIcons } from "../src/core/media";
-import { deadminesLog, raidLog, stockadeLog, warriorLog } from "./support/combatlog";
+import type { CompletedFight } from "@/lib/vigil/live";
+import { deadminesLog, PALADIN, paladinLog, raidLog, stockadeLog, warriorLog } from "./support/combatlog";
 
 const icons = new SpellIcons();
 
@@ -242,5 +243,64 @@ describe("CompanionEngine with the group observer", () => {
     expect(finished.map((f) => f.encounter?.id)).toEqual([672]);
     expect(e.groupFights()[0]!.deaths).toHaveLength(2);
     expect(e.classOf("Player-4395-0000C003")).toBe("mage");
+  });
+});
+
+describe("GroupObserver on an encounter Vigil has no notes for", () => {
+  // Ragnaros's kill relabelled as Karazhan's Attumen (encounter 652, NPC 15550), which the boss data does not know yet.
+  const text = raidLog()
+    .replaceAll("Ragnaros", "Attumen the Huntsman")
+    .replaceAll("-11502-", "-15550-")
+    .replace(/ENCOUNTER_(START|END),672,/g, "ENCOUNTER_$1,652,");
+  const { finished } = observe(text);
+
+  it("still tracks a boss fight named from the log", () => {
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({
+      kind: "boss",
+      label: "Attumen the Huntsman",
+      encounter: { id: 652, name: "Attumen the Huntsman", success: true },
+      boss: null,
+      result: "kill",
+    });
+  });
+});
+
+describe("CompanionEngine and the game version", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "vigil-version-"));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  async function run(flavor: string, header: string) {
+    const dir = path.join(root, "World of Warcraft", flavor, "Logs");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "WoWCombatLog.txt"), paladinLog().replace(/BUILD_VERSION,[^,]+,PROJECT_ID,\d+/, header));
+    const fights: CompletedFight[] = [];
+    const e = new CompanionEngine({
+      logsDir: dir,
+      startAt: "start",
+      session: { fallbackYear: 2026, playerGuid: PALADIN.guid },
+      onFight: (f) => fights.push(f),
+    });
+    await e.poll();
+    const snap = e.tick();
+    e.stop();
+    return { snap, fights };
+  }
+
+  it("tells Classic Era from Forever by the install folder, and stamps it on reports", async () => {
+    const { snap, fights } = await run("_classic_era_", "BUILD_VERSION,1.15.7,PROJECT_ID,2");
+    expect(snap.log).toMatchObject({ build: "1.15.7", projectId: 2, flavor: "_classic_era_", gameVersion: "era" });
+    expect(fights.length).toBeGreaterThan(0);
+    expect(fights[0]!.report.gameVersion).toBe("era");
+    expect(fights[0]!.report.log.flavor).toBe("_classic_era_");
+  });
+
+  it("reads TBC Anniversary from the log header", async () => {
+    const { snap, fights } = await run("_anniversary_", "BUILD_VERSION,2.5.6,PROJECT_ID,5");
+    expect(snap.log.gameVersion).toBe("anniversary");
+    expect(fights[0]!.report.gameVersion).toBe("anniversary");
   });
 });

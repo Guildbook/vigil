@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import path from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, protocol, session, shell } from "electron";
-import { MEDIA_SCHEME, MediaCache, parseMediaUrl, SpellIcons, upstreamUrls } from "../core/media";
+import { MEDIA_SCHEME, MediaCache, parseMediaUrl, SpellIconLookup, SpellIcons, upstreamUrls } from "../core/media";
 import { canOpenExternally } from "../core/origins";
 import type { AppState, Settings } from "../core/protocol";
 import { APP_NAME } from "../core/identity";
@@ -77,22 +77,32 @@ function openExternal(url: string) {
 
 /**
  * `vigil-media://` serves Blizzard's spell icons and boss portraits to the window from a disk cache, fetching
- * from the render CDN in the main process (see src/core/media.ts). Unknown or unreachable art gets the fallback.
+ * from the render CDN in the main process (see src/core/media.ts). Unknown or unreachable art gets the fallback,
+ * uncached by the window so the real icon shows on a later render once a lookup or download succeeds.
  */
 function serveMedia() {
   const icons = new SpellIcons();
-  const cache = new MediaCache({ dir: path.join(app.getPath("userData"), "media-cache"), fetch });
+  const dir = path.join(app.getPath("userData"), "media-cache");
+  const cache = new MediaCache({ dir, fetch });
+  const lookup = new SpellIconLookup({ dir, fetch });
   cache.prune();
   const fallback = readFileSync(path.join(__dirname, "renderer", "icons", "fallback.svg"));
-  const headers = (type: string) => ({ "content-type": type, "cache-control": "max-age=86400" });
+  const lookupWaitMs = 3000;
   protocol.handle(MEDIA_SCHEME, async (request) => {
-    const req = parseMediaUrl(request.url, icons);
+    let req = parseMediaUrl(request.url, icons);
+    if (req?.kind === "icon" && !req.icon && req.spellId) {
+      const pending = lookup.resolve(req.spellId);
+      const icon = await Promise.race([pending, new Promise<null>((resolve) => setTimeout(() => resolve(null), lookupWaitMs))]);
+      req = { ...req, icon };
+    }
     let body: Buffer | null = null;
     for (const upstream of req ? upstreamUrls(req) : []) {
       body = await cache.get(upstream);
       if (body) break;
     }
-    return body ? new Response(new Uint8Array(body), { headers: headers("image/jpeg") }) : new Response(new Uint8Array(fallback), { headers: headers("image/svg+xml") });
+    return body
+      ? new Response(new Uint8Array(body), { headers: { "content-type": "image/jpeg", "cache-control": "max-age=86400" } })
+      : new Response(new Uint8Array(fallback), { headers: { "content-type": "image/svg+xml", "cache-control": "no-store" } });
   });
 }
 

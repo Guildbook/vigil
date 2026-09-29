@@ -1,4 +1,5 @@
 import { CLASS_INFO, FACTION_LABELS, type Faction, type WowClass } from "@/lib/game";
+import { LOG_VERSION_LABELS, type LogGameVersion } from "@/lib/vigil/game-version";
 import type { Callout, LiveFight } from "@/lib/vigil/live";
 import type { Boss, BossAbility, Instance } from "../data/bosses";
 import { ADDON_ACTION_LABEL, addonStatus } from "../core/addon-status";
@@ -63,12 +64,12 @@ function img(src: string, size: number, cls: string, title = "") {
   return `<img class="${cls}" src="${esc(src)}" width="${size}" height="${size}" alt="" loading="lazy" draggable="false"${title ? ` title="${esc(title)}"` : ""} />`;
 }
 
-/** An ability's icon: by spell ID, else by name (class spells), with melee and environment drawn from known icons. */
+/** An ability's icon: by spell ID (with its name as a fallback), else by name, with melee and environment drawn from known icons. */
 function spellIcon(spellId: number | null, name: string, size = 18, source?: string, icon?: string) {
   const px = size > 36 ? 56 : 36;
   let src: string;
   if (icon) src = `vigil-media://icon/${px}/${icon}`;
-  else if (spellId) src = `vigil-media://spell/${px}/${spellId}`;
+  else if (spellId) src = `vigil-media://spell/${px}/${spellId}${name ? `?name=${encodeURIComponent(name)}` : ""}`;
   else if (name === "Melee") src = `vigil-media://icon/${px}/ability_meleedamage`;
   else if (source === "Environment" && ENVIRONMENT_ICONS[name.toLowerCase()]) src = `vigil-media://icon/${px}/${ENVIRONMENT_ICONS[name.toLowerCase()]}`;
   else src = `vigil-media://spell-name/${px}/${encodeURIComponent(name)}`;
@@ -102,7 +103,24 @@ function statusLine(s: AppState) {
   const file = e.status.file.split(/[\\/]/).pop();
   const who = e.player ? `${esc(e.player.name)}${e.player.level ? ` (${e.player.level})` : ""}` : "detecting character";
   const model = e.model ? esc(e.model.label) : s.settings.modelId === "auto" ? "detecting rotation" : "";
-  return `<span class="dot live"></span>${who}${model ? `, ${model}` : ""} <span class="file" title="${esc(e.status.file)}">in ${esc(file)}</span>`;
+  const game = e.log.gameVersion ? ` ${gameBadge(e.log.gameVersion)}` : "";
+  return `<span class="dot live"></span>${who}${model ? `, ${model}` : ""}${game} <span class="file" title="${esc(e.status.file)}">in ${esc(file)}</span>`;
+}
+
+const GAME_SHORT: Record<LogGameVersion, string> = { forever: "Forever", anniversary: "TBC", era: "Era", seasonal: "SoD", progression: "Progression" };
+
+function gameBadge(v: LogGameVersion) {
+  return `<span class="game-badge" title="${esc(LOG_VERSION_LABELS[v])}" data-version="${v}">${GAME_SHORT[v]}</span>`;
+}
+
+/** One line under the header when the log is from another game than the paired guild's. */
+function renderGameMismatch(s: AppState) {
+  const log = s.engine?.log.gameVersion ?? null;
+  const guild = s.pairing.paired ? s.pairing.guild : null;
+  if (!log || !guild?.gameVersion || log === guild.gameVersion) return "";
+  return `<div class="update game-mismatch">This log is from ${esc(LOG_VERSION_LABELS[log])}, but ${esc(guild.name)} is a ${esc(
+    LOG_VERSION_LABELS[guild.gameVersion],
+  )} guild. Uploads are kept with a warning until WoW: Forever launches, then refused. Pair Vigil with your ${esc(LOG_VERSION_LABELS[log])} guild.</div>`;
 }
 
 /** Top right: the recording character's class icon, with the faction as a badge when it is known. */
@@ -182,12 +200,23 @@ function renderUpdate(s: AppState) {
   return "";
 }
 
+/** How long the log may sit unchanged before the Current fight panel explains why. */
+const QUIET_HINT_MS = 2 * 60_000;
+
+/** Classic clients write the log in 48 KB batches, so solo and small-group fights can arrive minutes late. */
+function quietHint(s: AppState) {
+  const quiet = s.engine?.status.quietMs ?? null;
+  if (quiet === null || quiet < QUIET_HINT_MS) return "";
+  const mins = Math.floor(quiet / 60_000);
+  return `<p class="empty quiet-hint">No new combat log data for ${mins} min. WoW Classic writes the log in 48 KB batches, so solo and small-group pulls can show up minutes late (raids within seconds), and the rest is written when you log out. If logging is off, type /combatlog in game.</p>`;
+}
+
 function renderCurrent(s: AppState) {
   const f = s.engine?.current;
   if (!f) {
     return `<section class="panel"><h2>Current fight</h2><p class="empty">${
       s.engine?.status.file ? "Out of combat. The next pull shows up here." : "Nothing to follow yet."
-    }</p></section>`;
+    }</p>${quietHint(s)}</section>`;
   }
   const compact = s.settings.mode === "compact";
   const idleAlert = f.idleNowMs >= 2000;
@@ -249,9 +278,9 @@ function uploadLine(f: FightSummary) {
   const u = f.upload;
   switch (u.state) {
     case "uploaded":
-      return `<div class="upload">Uploaded. <button class="link" data-open="${esc(u.url)}">Open report</button></div>`;
+      return `<div class="upload">Uploaded. <button class="link" data-open="${esc(u.url)}">Open report</button>${u.warning ? `<div class="upload-warning">${esc(u.warning)}</div>` : ""}</div>`;
     case "failed":
-      return `<div class="upload bad">${esc(u.error)}${u.retrying ? " Retrying." : ` <button class="link" data-retry="${esc(f.id)}">Retry</button>`}</div>`;
+      return `<div class="upload bad">${esc(u.error)}${u.retrying ? " Retrying." : u.final ? "" : ` <button class="link" data-retry="${esc(f.id)}">Retry</button>`}</div>`;
     case "skipped":
       return `<div class="upload">${esc(u.reason)}</div>`;
     case "uploading":
@@ -414,6 +443,13 @@ function resultPill(result: GroupFightView["result"]) {
 
 function renderLiveIntel(g: GroupFightView | null) {
   const boss = g?.boss ? bossByKey(g.boss.key) : null;
+  if (!boss && g?.encounter) {
+    return `
+    <section class="panel">
+      <div class="panel-head"><h2>Boss intel</h2></div>
+      <p class="asum">No notes yet for ${esc(g.encounter.name)}. The fight is still tracked and uploaded as a boss fight.</p>
+    </section>`;
+  }
   if (!boss || (!boss.abilities.length && boss.status !== "full")) return "";
   if (!boss.abilities.length) {
     return `
@@ -734,7 +770,7 @@ function render() {
   const focused = focusKey();
   const body =
     view === "settings" ? renderSettings(state) : view === "intel" ? renderIntel(state) : view === "fight" ? renderFightDetail(state) : renderLive(state);
-  root.innerHTML = renderTopbar(state) + renderUpdate(state) + `<main class="scroll">${body}</main>`;
+  root.innerHTML = renderTopbar(state) + renderUpdate(state) + renderGameMismatch(state) + `<main class="scroll">${body}</main>`;
   const next = root.querySelector(".scroll");
   if (next) next.scrollTop = scrollTop;
   if (focused) root.querySelector<HTMLElement>(focused)?.focus({ preventScroll: true });

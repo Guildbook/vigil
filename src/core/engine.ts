@@ -1,4 +1,5 @@
 import path from "node:path";
+import { detectGameVersion, flavorFromPath, type LogGameVersion } from "@/lib/vigil/game-version";
 import { LiveSession, type Callout, type CompletedFight, type LiveFight, type LiveSessionOptions } from "@/lib/vigil/live";
 import { GroupObserver, GroupReader, type GroupFightView, type GroupObserverOptions } from "./group";
 import { LogTailer, type FileChangeReason } from "./tailer";
@@ -32,13 +33,23 @@ export interface EngineStatus {
   lastChange: FileChangeReason | null;
   lines: number;
   error: string | null;
+  /** Wall time since the followed file last grew (or was picked up); null with no file. */
+  quietMs: number | null;
 }
 
 export interface EngineSnapshot {
   status: EngineStatus;
   player: LiveSession["player"];
   model: { id: string; label: string } | null;
-  log: { version: number | null; advanced: boolean; build: string | null };
+  log: {
+    version: number | null;
+    advanced: boolean;
+    build: string | null;
+    projectId: number | null;
+    /** The `_flavor_` install folder being followed. */
+    flavor: string | null;
+    gameVersion: LogGameVersion | null;
+  };
   current: LiveFight | null;
   /** The whole group's side of the fight in progress. */
   group: GroupFightView | null;
@@ -64,13 +75,18 @@ export class CompanionEngine {
   private status: EngineStatus;
   private readonly observer: GroupObserver | null;
   private groupReader: GroupReader;
+  private readonly wall: () => number;
+  private lastGrowth: number | null = null;
+  private readonly flavor: string | null;
 
   constructor(private readonly opts: EngineOptions) {
+    this.wall = opts.wall ?? Date.now;
+    this.flavor = flavorFromPath(opts.logsDir);
     this.session = new LiveSession(opts.session);
     this.observer = opts.group ? new GroupObserver(opts.group) : null;
     this.groupReader = new GroupReader(opts.session?.fallbackYear);
     this.clock = new LogClock(opts.wall);
-    this.status = { logsDir: opts.logsDir, file: null, lastChange: null, lines: 0, error: null };
+    this.status = { logsDir: opts.logsDir, file: null, lastChange: null, lines: 0, error: null, quietMs: null };
     this.tailer = new LogTailer(
       { dir: opts.logsDir, startAt: opts.startAt, pollMs: opts.pollMs },
       {
@@ -83,6 +99,7 @@ export class CompanionEngine {
             }
           }
           this.status.lines += lines.length;
+          this.lastGrowth = this.wall();
           this.clock.seen(this.session.lastEventT);
           this.emit();
         },
@@ -93,6 +110,7 @@ export class CompanionEngine {
             this.groupReader = new GroupReader(opts.session?.fallbackYear);
           }
           this.status.file = file ? path.join(opts.logsDir, file) : null;
+          this.lastGrowth = file ? this.wall() : null;
           this.status.lastChange = reason;
           this.status.error = null;
           this.emit();
@@ -136,10 +154,17 @@ export class CompanionEngine {
     const model = this.session.model;
     const header = this.session.header;
     return {
-      status: { ...this.status },
+      status: { ...this.status, quietMs: this.lastGrowth === null ? null : Math.max(0, this.wall() - this.lastGrowth) },
       player: this.session.player,
       model: model ? { id: model.id, label: model.label } : null,
-      log: { version: header.version, advanced: header.advanced, build: header.build },
+      log: {
+        version: header.version,
+        advanced: header.advanced,
+        build: header.build,
+        projectId: header.projectId,
+        flavor: this.flavor,
+        gameVersion: detectGameVersion({ ...header, flavor: this.flavor }).version,
+      },
       current,
       group,
     };
@@ -156,7 +181,13 @@ export class CompanionEngine {
   }
 
   private emit() {
-    for (const f of this.session.drainCompleted()) this.opts.onFight?.(f);
+    for (const f of this.session.drainCompleted()) this.opts.onFight?.(this.withGame(f));
     for (const c of this.session.drainCallouts()) this.opts.onCallout?.(c);
+  }
+
+  /** The session sees only the log's header; the install folder settles Forever against Era for 1.x logs. */
+  private withGame(fight: CompletedFight): CompletedFight {
+    const log = { ...fight.report.log, flavor: this.flavor };
+    return { ...fight, report: { ...fight.report, log, gameVersion: detectGameVersion(log).version } };
   }
 }

@@ -1,4 +1,5 @@
 import type { Faction, WowClass } from "@/lib/game";
+import type { LogGameVersion } from "@/lib/vigil/game-version";
 import type { Callout } from "@/lib/vigil/live";
 import type { EngineSnapshot } from "./engine";
 import type { GroupFightView } from "./group";
@@ -28,9 +29,9 @@ export interface Settings {
 export type UploadState =
   | { state: "queued" }
   | { state: "uploading" }
-  | { state: "uploaded"; url: string }
+  | { state: "uploaded"; url: string; /** Kept despite a problem the player should know about (a log from another game). */ warning?: string }
   | { state: "skipped"; reason: string }
-  | { state: "failed"; error: string; retrying: boolean };
+  | { state: "failed"; error: string; retrying: boolean; /** Sending the same report again cannot help. */ final?: boolean };
 
 export interface FightSummary {
   id: string;
@@ -60,7 +61,8 @@ export interface Identity {
 
 export interface PairingState {
   paired: boolean;
-  guild: { slug: string; name: string } | null;
+  /** `gameVersion` comes from the site's profile, so it is missing until that has loaded. */
+  guild: { slug: string; name: string; gameVersion?: LogGameVersion } | null;
   user: { name: string | null } | null;
   device: { id: string; name: string } | null;
   defaultVisibility: "private" | "officers" | "guild" | null;

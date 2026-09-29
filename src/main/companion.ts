@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import type { Faction, WowClass } from "@/lib/game";
+import type { LogGameVersion } from "@/lib/vigil/game-version";
 import type { Callout, CompletedFight } from "@/lib/vigil/live";
 import type { FightReport } from "@/lib/vigil/report";
 import { ROTATION_MODELS } from "@/lib/vigil/rotations";
@@ -23,7 +24,7 @@ const MAX_GROUP_FIGHTS = 15;
 interface Profile {
   /** The guild's canonical site, which changes when the guild verifies a custom domain. */
   siteUrl?: string;
-  guild: { slug: string; name: string };
+  guild: { slug: string; name: string; gameVersion?: LogGameVersion };
   user: { name: string | null };
   device: { id: string; name: string };
   defaultVisibility: "private" | "officers" | "guild";

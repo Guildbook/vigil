@@ -2,7 +2,7 @@
   "name": "vigil",
   "productName": "Vigil",
   "desktopName": "vigil.desktop",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "private": true,
   "description": "Vigil: live combat log analysis on a second screen, paired with your guild's Guildbook site",
   "author": "Guildbook",
@@ -24,9 +24,11 @@
     "lint": "eslint",
     "test": "vitest run",
     "demo:log": "tsx scripts/demo-log.ts",
+    "replay:log": "tsx scripts/replay-log.ts",
     "tray:icons": "tsx scripts/tray-icons.ts",
     "mac:assets": "tsx scripts/mac-assets.ts",
     "addon:icon": "tsx scripts/addon-icon.ts",
+    "addon:data": "tsx scripts/addon-data.ts",
     "icons:generate": "tsx scripts/generate-icon-data.ts",
     "dist": "node scripts/build.mjs --production && electron-builder --config electron-builder.config.cjs --publish never",
     "dist:mac": "node scripts/build.mjs --production && electron-builder --config electron-builder.config.cjs --mac --publish never",
@@ -52,6 +54,7 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.47.0",
     "vitest": "^5.0.2",
+    "wasmoon": "^1.16.0",
     "zod": "^4.6.5"
   },
   "packageManager": "pnpm@10.33.2"

@@ -21,6 +21,7 @@ import {
   type LogFacts,
   type ModelIndex,
 } from "./rotations/engine";
+import { detectGameVersion } from "./game-version";
 import { getModel } from "./rotations";
 import { REPORT_VERSION, type FightReport } from "./report";
 import { snapshotFor, type VigilSnapshot } from "./saved-variables";
@@ -33,6 +34,8 @@ export interface AnalyzeOptions {
   modelId: string | null;
   header: LogHeader;
   snapshots?: VigilSnapshot[];
+  /** The `_flavor_` install folder the log was read from, which tells Forever from Era logs. */
+  flavor?: string | null;
 }
 
 export function playerLevel(fights: Fight[], guid: string): number | null {
@@ -167,8 +170,15 @@ function analyzeFight(
         died: t.died,
       })),
     },
-    player: { name: opts.playerName.slice(0, 120), guid: guid.slice(0, 64), level },
-    log: { version: opts.header.version, advanced: opts.header.advanced, build: opts.header.build, projectId: opts.header.projectId },
+    player: { name: opts.playerName.slice(0, 120), guid: guid.slice(0, 64), level: reportLevel(level) },
+    gameVersion: detectGameVersion({ ...opts.header, flavor: opts.flavor }).version,
+    log: {
+      version: opts.header.version,
+      advanced: opts.header.advanced,
+      build: opts.header.build,
+      projectId: opts.header.projectId,
+      flavor: opts.flavor ?? null,
+    },
     model: model ? { id: model.id, label: model.label, metric: model.metric } : null,
     totals: {
       damage: metrics.damage,
@@ -219,6 +229,9 @@ function analyzeFight(
   };
   return { report, state, metrics, gcdMs };
 }
+
+/** The schema's 1-100 integer, or null: a misread column must not get the whole report rejected. */
+const reportLevel = (level: number | null) => (level !== null && Number.isInteger(level) && level >= 1 && level <= 100 ? level : null);
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 const roundInterval = ([a, b]: [number, number]): [number, number] => [Math.max(0, Math.round(a)), Math.max(0, Math.round(b))];

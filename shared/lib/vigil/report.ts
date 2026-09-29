@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LOG_GAME_VERSIONS } from "./game-version";
 import { vigilSnapshotSchema } from "./saved-variables";
 
 /** Bumped when the report shape changes; the report page reads every version it knows. */
@@ -28,6 +29,8 @@ const spellStat = z.object({
 
 export const fightReportSchema = z.object({
   version: z.literal(REPORT_VERSION),
+  /** The game the log came from (see game-version.ts); absent from older uploads, where the server derives it from `log`. */
+  gameVersion: z.enum(LOG_GAME_VERSIONS).nullish(),
   fight: z.object({
     label,
     kind: z.enum(["boss", "trash"]),
@@ -54,6 +57,8 @@ export const fightReportSchema = z.object({
     advanced: z.boolean(),
     build: z.string().max(40).nullable(),
     projectId: z.number().int().nullable(),
+    /** The `_flavor_` install folder the log was read from, when known. */
+    flavor: z.string().max(40).nullish(),
   }),
   model: z.object({ id: z.string().max(40), label, metric: z.enum(["damage", "threat", "healing"]) }).nullable(),
   totals: z.object({

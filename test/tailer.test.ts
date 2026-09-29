@@ -202,6 +202,23 @@ describe("CompanionEngine on a growing log", () => {
     expect(fights.map((f) => f.report.fight.label)).toEqual(["Defias Pillager", "Rhahk'Zor", "Rockhide Boar", "Young Wolf"]);
   });
 
+  it("reports how long the log has sat unchanged, reset by each write the client flushes", async () => {
+    const file = path.join(dir, "WoWCombatLog.txt");
+    const { e, advance } = engine();
+    await e.poll();
+    expect(e.tick().status.quietMs).toBeNull();
+
+    writeFileSync(file, "9/28/2026 19:52:18.598-7  COMBAT_LOG_VERSION,9,ADVANCED_LOG_ENABLED,1,BUILD_VERSION,2.5.6,PROJECT_ID,5\n");
+    await e.poll();
+    advance(150_000);
+    expect(e.tick().status.quietMs).toBe(150_000);
+
+    appendFileSync(file, '9/28/2026 19:55:29.007-7  ZONE_CHANGE,389,"Ragefire Chasm",1\n');
+    await e.poll();
+    advance(1000);
+    expect(e.tick().status.quietMs).toBe(1000);
+  });
+
   it("recovers from truncation mid-session", async () => {
     const file = path.join(dir, "WoWCombatLog.txt");
     writeFileSync(file, warriorLog().slice(0, 5000));
