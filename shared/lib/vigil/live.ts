@@ -128,7 +128,9 @@ export class LiveSession {
   }
 
   pushLine(line: string) {
+    const header = this.reader.header;
     const ev = this.reader.read(line);
+    if (this.reader.header !== header && this.splitter && !this.opts.playerGuid) this.relog();
     if (!ev) return;
     this.lastEventT = ev.t;
     this.scanner.push(ev);
@@ -163,6 +165,18 @@ export class LiveSession {
     this.playerGuid = this.opts.playerGuid ?? null;
     this.splitter = null;
     if (this.playerGuid) this.startSplitter(this.playerGuid);
+  }
+
+  /**
+   * A new COMBAT_LOG_VERSION header in the same file: Classic clients append a login (possibly on another
+   * character) or a /reload to the open log. Finish the open fight and learn the recorder again.
+   */
+  private relog() {
+    this.finish();
+    this.buffer = [];
+    this.context = [];
+    this.playerGuid = null;
+    this.splitter = null;
   }
 
   /** Closes the open fight now (the log stopped, or the app is quitting). */

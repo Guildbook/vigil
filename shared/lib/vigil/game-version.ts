@@ -3,8 +3,8 @@
  * read from (`_anniversary_`, `_classic_era_`...). Self-contained so the Vigil app can vendor it unchanged.
  *
  * The values match the site's guild versions (`src/lib/game-versions.ts`). Known project ids: 1 retail, 2 Classic
- * Era, 5 TBC (the Anniversary client; the 2021 TBC Classic that also used 5 is gone), 19 Mists progression.
- * Forever's project id is not known before launch; add it to FOREVER_PROJECT_IDS once seen in a real log.
+ * Era, 5 TBC (the Anniversary client; the 2021 TBC Classic that also used 5 is gone), 18 WoW: Forever (1.60.x
+ * builds, seen in the beta), 19 Mists progression.
  */
 
 export const LOG_GAME_VERSIONS = ["forever", "anniversary", "era", "seasonal", "progression"] as const;
@@ -18,7 +18,7 @@ export const LOG_VERSION_LABELS: Record<LogGameVersion, string> = {
   progression: "Classic progression",
 };
 
-export const FOREVER_PROJECT_IDS: readonly number[] = [];
+export const FOREVER_PROJECT_IDS: readonly number[] = [18];
 
 const PROJECT_RETAIL = 1;
 const PROJECT_ERA = 2;
@@ -46,6 +46,9 @@ function major(build: string | null | undefined): number | null {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+/** Forever ships 1.60.x builds; Classic Era is on 1.15.x. */
+const isForeverBuild = (build: string | null | undefined) => /^1\.([6-9]\d|\d{3,})\./.test(build ?? "");
+
 function versionFromFlavor(flavor: string): LogGameVersion | null {
   if (/forever/i.test(flavor) || /^_classic_beta_$/i.test(flavor)) return "forever";
   if (/^_anniversary_$/i.test(flavor)) return "anniversary";
@@ -60,8 +63,9 @@ export function detectGameVersion(hints: GameVersionHints): DetectedGameVersion 
   if (buildMajor !== null && buildMajor >= 3) return UNKNOWN;
   if (projectId != null && FOREVER_PROJECT_IDS.includes(projectId)) return { version: "forever", source: "header" };
   if (projectId === PROJECT_TBC || buildMajor === 2) return { version: "anniversary", source: "header" };
+  if (projectId !== PROJECT_ERA && isForeverBuild(build)) return { version: "forever", source: "header" };
 
-  // Left: a 1.x build or no build at all. Forever and Era share the 1.x client, so only the folder can tell them apart.
+  // Left: a 1.x build or no build at all. Era and older Forever betas share 1.15.x, so only the folder tells them apart.
   const fromFolder = flavor ? versionFromFlavor(flavor) : null;
   if (!fromFolder || (fromFolder === "anniversary" && buildMajor !== null)) return UNKNOWN;
   if (projectId != null && projectId !== PROJECT_ERA && fromFolder !== "forever") return UNKNOWN;

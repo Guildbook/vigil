@@ -3,7 +3,17 @@ import type { Field, LogHeader, TokenizedLine } from "./tokenizer";
 import type { AdvancedInfo, CombatEvent, LogUnit } from "./types";
 
 /** Suffixes that carry the advanced-logging block (when ADVANCED_LOG_ENABLED is 1). */
-const ADVANCED_SUFFIXES = ["_DAMAGE", "_DAMAGE_LANDED", "_HEAL", "_ENERGIZE", "_DRAIN", "_LEECH", "_CAST_SUCCESS"];
+const ADVANCED_SUFFIXES = [
+  "_DAMAGE",
+  "_DAMAGE_LANDED",
+  "_SHIELD",
+  "_SPLIT",
+  "_HEAL",
+  "_ENERGIZE",
+  "_DRAIN",
+  "_LEECH",
+  "_CAST_SUCCESS",
+];
 
 const PREFIXES = ["SPELL_PERIODIC", "SPELL_BUILDING", "SPELL", "RANGE", "SWING", "ENVIRONMENTAL", "DAMAGE"] as const;
 
@@ -68,6 +78,9 @@ function maxLevel(build: string | null): number {
   return ({ 1: 60, 2: 70, 3: 80, 4: 85, 5: 90 } as Record<number, number>)[major] ?? 100;
 }
 
+/** WoW: Forever (project 18, 1.60+ builds) writes item level in the level column for players, under the cap too. */
+const writesItemLevel = (header: LogHeader) => header.projectId === 18 || /^1\.([6-9]\d|\d{3,})\./.test(header.build ?? "");
+
 /**
  * Advanced parameters: 16 fields plus 0 to 4 between armor and powerType. Retail (COMBAT_LOG_VERSION 20+)
  * writes absorb there (17); older retail writes nothing (16); the TBC Anniversary client (version 9, build
@@ -79,7 +92,8 @@ function advanced(fields: Field[], at: number, header: LogHeader): { info: Advan
   const guid = str(fields[at]) ?? "";
   // Modern clients write item level in the level column for players; a value over the cap is not a level.
   const level = num(fields[at + 15 + o]);
-  const playerLevelOk = level !== undefined && level >= 1 && level <= maxLevel(header.build);
+  const playerLevelOk =
+    level !== undefined && level >= 1 && level <= maxLevel(header.build) && !writesItemLevel(header);
   const info: AdvancedInfo = {
     guid,
     hp: num(fields[at + 2]),
@@ -138,13 +152,28 @@ export function normalizeEvent(line: TokenizedLine, ctx: NormalizeContext): Comb
   const ev: CombatEvent = { t, type, src: unit(fields, 0), dst: unit(fields, 4) };
   if (!prefix) return ev;
 
+  const suffix = type.slice(prefix.length);
   let i = 8;
+  const readAdvanced = () => {
+    if (!ADVANCED_SUFFIXES.includes(suffix) || !isGuidLike(str(fields[i]))) return;
+    // WoW: Forever writes the block while its header says ADVANCED_LOG_ENABLED,0; a block that fits is trusted,
+    // and the header is corrected so reports do not claim advanced logging was off.
+    const headerSaysOff = ctx.header.version !== null && !ctx.header.advanced;
+    if (headerSaysOff && ![0, 1, 2, 3, 4].some((extra) => fitsLayout(fields, i, extra))) return;
+    if (headerSaysOff) ctx.header.advanced = true;
+    const adv = advanced(fields, i, ctx.header);
+    ev.adv = adv.info;
+    i += adv.length;
+  };
+
   if (prefix === "SPELL" || prefix === "SPELL_PERIODIC" || prefix === "SPELL_BUILDING" || prefix === "RANGE") {
     ev.spellId = num(fields[i]);
     ev.spellName = str(fields[i + 1]);
     ev.school = parseFlags(str(fields[i + 2]));
     i += 3;
   } else if (prefix === "ENVIRONMENTAL") {
+    // The advanced block comes before the environment type here.
+    readAdvanced();
     ev.spellName = str(fields[i]) ?? "Environment";
     i += 1;
   } else if (prefix === "DAMAGE") {
@@ -155,13 +184,7 @@ export function normalizeEvent(line: TokenizedLine, ctx: NormalizeContext): Comb
     i += 3;
   }
 
-  const suffix = type.slice(prefix.length);
-  const advancedOff = ctx.header.version !== null && !ctx.header.advanced;
-  if (!advancedOff && ADVANCED_SUFFIXES.includes(suffix) && isGuidLike(str(fields[i]))) {
-    const adv = advanced(fields, i, ctx.header);
-    ev.adv = adv.info;
-    i += adv.length;
-  }
+  if (prefix !== "ENVIRONMENTAL") readAdvanced();
 
   const rest = fields.slice(i);
   if (suffix === "_DAMAGE" || suffix === "_DAMAGE_LANDED" || suffix === "_SHIELD" || suffix === "_SPLIT") {

@@ -1,5 +1,5 @@
 import { abilityName, effectiveHeal, isDamage, isHeal, isHostileNpc, isMiss } from "@/lib/combatlog/events";
-import { FLAGS, isGuidLike, isPlayerGuid, npcIdFromGuid, shortName } from "@/lib/combatlog/guid";
+import { FLAGS, isPlayerGuid, npcIdFromGuid, shortName } from "@/lib/combatlog/guid";
 import { normalizeEvent } from "@/lib/combatlog/normalize";
 import { parseHeader, tokenizeLine, type LogHeader } from "@/lib/combatlog/tokenizer";
 import type { CombatEvent, LogUnit } from "@/lib/combatlog/types";
@@ -20,11 +20,7 @@ import type { SpellIcons } from "./media";
  * does not say whose they are).
  */
 
-/**
- * Reads lines for the observer. Same as the shared LogReader, plus one correction: with advanced logging on,
- * ENVIRONMENTAL_DAMAGE puts the 17-field advanced block before the environment type, which the shared
- * normalizer reads as the type (a GUID). Here the type is taken from after the block.
- */
+/** Reads lines for the observer, like the shared LogReader but without its line counters. */
 export class GroupReader {
   private header: LogHeader = { version: null, advanced: false, build: null, projectId: null };
 
@@ -38,18 +34,11 @@ export class GroupReader {
       this.header = parseHeader(tok.fields);
       return null;
     }
-    let ev: CombatEvent | null;
     try {
-      ev = normalizeEvent(tok, { header: this.header });
+      return normalizeEvent(tok, { header: this.header });
     } catch {
       return null;
     }
-    if (ev?.type === "ENVIRONMENTAL_DAMAGE" && isGuidLike(ev.spellName)) {
-      const hasAbsorb = this.header.version === null || this.header.version >= 20;
-      const type = tok.fields[8 + (hasAbsorb ? 17 : 16)];
-      ev.spellName = typeof type === "string" && !isGuidLike(type) ? type : "Environment";
-    }
-    return ev;
   }
 }
 
