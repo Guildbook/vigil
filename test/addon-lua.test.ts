@@ -73,7 +73,7 @@ describe("Vigil addon in a Lua VM", () => {
   it.each(["era", "tbc", "retail", "forever"] as Flavor[])("loads and starts without errors on the %s client", async (flavor) => {
     const a = await load(flavor);
     expect(await a.errors()).toEqual([]);
-    expect(await a.json("H.ns.version")).toBe("0.3.1");
+    expect(await a.json("H.ns.version")).toBe("0.3.2");
     expect(await a.json("VigilDB.version")).toBe(2);
     expect(await a.json("VigilLivePanel ~= nil and VigilMinimapButton ~= nil")).toBe(true);
     expect(await a.json("H.ns.intel.count")).toBeGreaterThan(200);
@@ -87,7 +87,31 @@ describe("Vigil addon in a Lua VM", () => {
     expect(await a.json("VigilPanel:IsShown()")).toBe(true);
     const height = await a.json<number>("VigilPanel:GetHeight()");
     expect(height).toBeGreaterThan(300);
-    expect(await a.json("GameTooltip.lines[1]")).toBe("Vigil | v0.3.1");
+    expect(await a.json("GameTooltip.lines[1]")).toBe("Vigil | v0.3.2");
+  });
+
+  it.each(["era", "tbc", "retail", "forever"] as Flavor[])("presses, drags and clicks the masked minimap button on the %s client", async (flavor) => {
+    const a = await load(flavor);
+    expect(await a.json("VigilMinimapButton.icon.masked")).toBe(true);
+    const offsets = "(function() local p, _, _, x, y = VigilMinimapButton.icon:GetPoint() return { p, x, y } end)()";
+    const start = await a.json<[string, number, number]>(offsets);
+    await a.run(`local b = VigilMinimapButton
+      b.scripts.OnMouseDown(b, "LeftButton")
+      H.pressed = ${offsets}
+      b.scripts.OnMouseUp(b, "LeftButton")
+      b.scripts.OnClick(b, "LeftButton")
+      b.scripts.OnMouseDown(b, "LeftButton")
+      b.scripts.OnDragStart(b)
+      b.scripts.OnUpdate(b, 0.1)
+      b.scripts.OnDragStop(b)
+      b.scripts.OnMouseUp(b, "LeftButton")
+      b.scripts.OnMouseDown(b, "RightButton")
+      b.scripts.OnMouseUp(b, "RightButton")
+      b.scripts.OnClick(b, "RightButton")`);
+    expect(await a.errors()).toEqual([]);
+    expect(await a.json("H.pressed")).toEqual([start[0], start[1] + 1, start[2] - 1]);
+    expect(await a.json(offsets)).toEqual(start);
+    expect(await a.json("VigilMinimapButton.icon.texCoord == nil")).toBe(true);
   });
 
   it("migrates 0.2.x SavedVariables without losing snapshots or settings", async () => {

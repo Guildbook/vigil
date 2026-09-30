@@ -164,6 +164,11 @@ function M:CreateFontString() return new("FontString", nil, self) end
 function M:CreateAnimationGroup() return new("AnimationGroup", nil, self) end
 function M:CreateAnimation() return new("Animation", nil, self) end
 function M:SetTexture(t) self.texture = t end
+-- Masks as on modern clients: once a texture has one, its coordinates are fixed and SetTexCoord raises an error.
+function M:SetTexCoord(...) if self.masked then error("Texture:SetTexCoord(): Cannot set tex coords when texture has mask.", 2) end self.texCoord = { ... } end
+function M:SetMask(path) self.masked = path ~= nil and path ~= "" end
+function M:AddMaskTexture() self.masked = true end
+function M:GetNumMaskTextures() return self.masked and 1 or 0 end
 function M:GetTexture() return self.texture end
 function M:SetText(t) self.text = t end
 function M:GetText() return self.text end

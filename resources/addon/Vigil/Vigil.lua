@@ -1,5 +1,5 @@
 local ADDON_NAME, ns = ...
-local ADDON_VERSION = "0.3.1"
+local ADDON_VERSION = "0.3.2"
 ns.version = ADDON_VERSION
 
 local L, S, F, I = ns.logging, ns.snapshots, ns.fight, ns.intel

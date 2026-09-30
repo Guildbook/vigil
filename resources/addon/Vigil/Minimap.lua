@@ -183,25 +183,37 @@ local function createMinimapButton()
   background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
   local icon = button:CreateTexture(nil, "ARTWORK")
   icon:SetTexture(ns.ICON)
+  local iconPoint, iconX, iconY
   if ns.IS_MAINLINE then
     overlay:SetSize(50, 50)
     overlay:SetPoint("TOPLEFT")
     background:SetSize(24, 24)
     background:SetPoint("CENTER", 0, 1)
     icon:SetSize(18, 18)
-    icon:SetPoint("CENTER", 0, 1)
+    iconPoint, iconX, iconY = "CENTER", 0, 1
   else
     overlay:SetSize(53, 53)
     overlay:SetPoint("TOPLEFT")
     background:SetSize(20, 20)
     background:SetPoint("TOPLEFT", 7, -5)
     icon:SetSize(17, 17)
-    icon:SetPoint("TOPLEFT", 7, -6)
+    iconPoint, iconX, iconY = "TOPLEFT", 7, -6
   end
+  icon:SetPoint(iconPoint, iconX, iconY)
+  -- Texture coordinates can't change once a mask is set (a Lua error on modern clients), so the pressed look
+  -- nudges the icon instead of cropping it.
   if icon.SetMask then
     pcall(icon.SetMask, icon, "Interface\\CharacterFrame\\TempPortraitAlphaMask")
   end
   button.icon = icon
+  local function pressIcon(pressed)
+    icon:ClearAllPoints()
+    if pressed then
+      icon:SetPoint(iconPoint, iconX + 1, iconY - 1)
+    else
+      icon:SetPoint(iconPoint, iconX, iconY)
+    end
+  end
 
   button:SetScript("OnEnter", function(self)
     if not self.isMoving then
@@ -211,11 +223,11 @@ local function createMinimapButton()
   button:SetScript("OnLeave", function()
     GameTooltip:Hide()
   end)
-  button:SetScript("OnMouseDown", function(self)
-    self.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+  button:SetScript("OnMouseDown", function()
+    pressIcon(true)
   end)
-  button:SetScript("OnMouseUp", function(self)
-    self.icon:SetTexCoord(0, 1, 0, 1)
+  button:SetScript("OnMouseUp", function()
+    pressIcon(false)
   end)
   button:SetScript("OnDragStart", function(self)
     self.isMoving = true
@@ -227,7 +239,7 @@ local function createMinimapButton()
     self:SetScript("OnUpdate", nil)
     self.isMoving = false
     self:UnlockHighlight()
-    self.icon:SetTexCoord(0, 1, 0, 1)
+    pressIcon(false)
   end)
   button:SetScript("OnClick", function(self, mouseButton)
     if mouseButton == "RightButton" then

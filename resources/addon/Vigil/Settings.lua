@@ -367,7 +367,7 @@ function ns.refreshPanel()
   if L.advancedOn() then
     panel.advanced:SetText("Advanced Combat Logging is on.")
   else
-    panel.advanced:SetText("|cffffb24cAdvanced Combat Logging is off. Turn it on in System > Network.|r")
+    panel.advanced:SetText("|cffffb24cFor the Vigil desktop app, turn on Advanced Combat Logging in System > Network.|r")
   end
   local tracked, name, instanceType = L.trackedInstance()
   if tracked then

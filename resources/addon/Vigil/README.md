@@ -14,7 +14,7 @@ World of Warcraft/_classic_era_/Interface/AddOns/Vigil/
 
 ## Use
 
-1. Turn on **Advanced Combat Logging** once, in System > Network.
+1. Turn on **Advanced Combat Logging** once, in System > Network. Only the desktop app uses it (it adds power and position data to the log file); the in-game panels work either way.
 2. Click the Vigil button on the minimap (or type `/vigil`) to open the settings. Right-click the button to turn combat logging on or off. Drag it to move it around the minimap.
 3. By default combat logging turns on when you enter a dungeon or raid and off again when you leave. The settings can instead keep it on at every login. If the client has no `LoggingCombat`, type `/combatlog` instead.
 4. Play. The live panel follows each fight; snapshots are taken on login, after each fight, and when gear, level or talents change. Uploads happen from the Vigil desktop app.
@@ -64,7 +64,7 @@ Vigil only shows information. It never casts, targets or clicks for you.
 
 ## SavedVariables
 
-`VigilDB.machineExport` is a JSON string: `{"version":1,"addon":"Vigil","addonVersion":"0.3.1","snapshots":[...]}`. Each snapshot has `at` (Unix seconds), `name`, `realm`, `guid`, `class`, `race`, `level`, `stats`, `gear` and `talents`. The site parses it with `src/lib/vigil/saved-variables.ts`.
+`VigilDB.machineExport` is a JSON string: `{"version":1,"addon":"Vigil","addonVersion":"0.3.2","snapshots":[...]}`. Each snapshot has `at` (Unix seconds), `name`, `realm`, `guid`, `class`, `race`, `level`, `stats`, `gear` and `talents`. The site parses it with `src/lib/vigil/saved-variables.ts`.
 
 `VigilDB` version 2 (0.3.0) adds `live`, `intel` and `callouts` settings and `fights`, the last 5 fight summaries (label, boss, duration, damage, DPS, healing, active and idle time). Version 1 data from 0.2.x is kept as it is.
 
