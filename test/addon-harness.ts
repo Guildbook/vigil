@@ -337,13 +337,44 @@ const FLAVORS: Record<Flavor, string> = {
     function UnitGUID(u) local v = plainGUID(u) if v and restricted(u) then return H.secret(v) end return v end
     function UnitName(u) local v = plainName(u) if v and restricted(u) and H.namesSecret then return H.secret(v) end return v end
 
-    -- Formatters that accept secrets and return secret text.
-    local function abbreviate(n)
-      if n >= 1000000 then return string.format("%.1fM", n / 1000000) elseif n >= 1000 then return string.format("%.1fK", n / 1000) end
-      return tostring(math.floor(n))
+    -- Formatters that accept secrets (SecretArguments = AllowedWhenTainted) and return secret text. Below the
+    -- first breakpoint the number comes back as it is, unrounded ("10.68421052636"), as seen on the client.
+    local DEFAULT_BREAKPOINTS = {
+      { breakpoint = 10000000, abbreviation = "M", significandDivisor = 1000000, fractionDivisor = 1 },
+      { breakpoint = 1000000, abbreviation = "M", significandDivisor = 100000, fractionDivisor = 10 },
+      { breakpoint = 10000, abbreviation = "K", significandDivisor = 1000, fractionDivisor = 1 },
+      { breakpoint = 1000, abbreviation = "K", significandDivisor = 100, fractionDivisor = 10 },
+    }
+    local function abbreviate(n, options)
+      for _, b in ipairs(options and options.breakpointData or DEFAULT_BREAKPOINTS) do
+        if n >= b.breakpoint then
+          local value = math.floor(n / b.significandDivisor) / b.fractionDivisor
+          if value == math.floor(value) then value = math.floor(value) end
+          return tostring(value) .. b.abbreviation
+        end
+      end
+      return tostring(n)
     end
-    function AbbreviateNumbers(n) if H.isSecret(n) then return H.secret(abbreviate(H.plain(n))) end return abbreviate(n) end
-    function BreakUpLargeNumbers(n) if H.isSecret(n) then return H.secret(tostring(H.plain(n))) end return tostring(n) end
+    local function acceptsSecrets(fn)
+      return function(n, ...)
+        if H.isSecret(n) then return H.secret(fn(H.plain(n), ...)) end
+        return fn(n, ...)
+      end
+    end
+    AbbreviateNumbers = acceptsSecrets(abbreviate)
+    AbbreviateLargeNumbers = acceptsSecrets(function(n) return abbreviate(n) end)
+    BreakUpLargeNumbers = acceptsSecrets(function(n) return tostring(n) end)
+    -- string.format takes secrets from tainted code and returns secret text.
+    local plainFormat = string.format
+    string.format = function(pattern, ...)
+      local args, secret = table.pack(...), H.isSecret(pattern)
+      for i = 1, args.n do
+        if H.isSecret(args[i]) then args[i], secret = H.plain(args[i]), true end
+      end
+      local text = plainFormat(H.plain(pattern), unpack(args, 1, args.n))
+      if secret then return H.secret(text) end
+      return text
+    end
 
     -- The game's damage meter: H.meter holds the current session; amounts are secret while H.inCombat.
     Enum = { DamageMeterSessionType = { Overall = 0, Current = 1, Expired = 2 },

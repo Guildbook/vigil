@@ -221,36 +221,26 @@ end
 -- Formatting
 -- ---------------------------------------------------------------------------
 
--- Client formatters documented to accept secret values (SecretArguments = AllowedWhenTainted in 12.x).
-local SECRET_FORMATTERS = { "AbbreviateNumbers", "BreakUpLargeNumbers" }
-
+--- Amounts (damage, healing): whole numbers below 10,000, then "12.3K" and "1.23M".
 function ns.formatNumber(n)
   n = n or 0
   if n >= 1000000 then
     return string.format("%.2fM", n / 1000000)
   elseif n >= 10000 then
-    return string.format("%.1fk", n / 1000)
+    return string.format("%.1fK", n / 1000)
   end
   return tostring(math.floor(n + 0.5))
 end
 
---- Display text for a number that may be secret (the game's damage meter in combat). A secret allows no
---- arithmetic or comparison, so it goes to the client's own formatters, which accept secrets, and as a last
---- resort straight to FontString:SetText as it is. Never compare or concatenate the result.
-function ns.displayNumber(n)
-  if not isSecret(n) then
-    return type(n) == "number" and ns.formatNumber(n) or ""
+--- Rates (DPS, HPS): one decimal below 1,000, then "1.2K" and "1.23M".
+function ns.formatRate(n)
+  n = n or 0
+  if n >= 1000000 then
+    return string.format("%.2fM", n / 1000000)
+  elseif n >= 1000 then
+    return string.format("%.1fK", n / 1000)
   end
-  for _, name in ipairs(SECRET_FORMATTERS) do
-    local format = _G[name]
-    if type(format) == "function" then
-      local ok, text = pcall(format, n)
-      if ok and text then
-        return text
-      end
-    end
-  end
-  return n
+  return string.format("%.1f", n)
 end
 
 function ns.formatTime(seconds)

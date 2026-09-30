@@ -33,16 +33,16 @@ local function addFightLines(tooltip)
       tooltip:AddDoubleLine("In combat", ns.formatTime(view.elapsed), 1, 0.82, 0, 1, 1, 1)
     elseif dps then
       tooltip:AddLine(" ")
-      tooltip:AddDoubleLine("Last fight", ns.formatNumber(dps) .. " DPS", 0.8, 0.8, 0.8, 1, 1, 1)
+      tooltip:AddDoubleLine("Last fight", ns.formatRate(dps) .. " DPS", 0.8, 0.8, 0.8, 1, 1, 1)
     end
     return
   end
   if view.open and view.available ~= false then
     tooltip:AddLine(" ")
     tooltip:AddDoubleLine(view.label or "Fight", ns.formatTime(view.elapsed), 1, 0.82, 0, 1, 1, 1)
-    tooltip:AddDoubleLine("DPS", ns.formatNumber(view.dps), 1, 1, 1, 1, 1, 1)
+    tooltip:AddDoubleLine("DPS", ns.formatRate(view.dps), 1, 1, 1, 1, 1, 1)
     if view.healing > 0 then
-      tooltip:AddDoubleLine("HPS", ns.formatNumber(view.hps), 1, 1, 1, 1, 1, 1)
+      tooltip:AddDoubleLine("HPS", ns.formatRate(view.hps), 1, 1, 1, 1, 1, 1)
     end
     return
   end
@@ -55,7 +55,7 @@ local function addFightLines(tooltip)
   if last then
     tooltip:AddLine(" ")
     tooltip:AddDoubleLine("Last fight", ns.formatTime(last.duration), 0.8, 0.8, 0.8, 0.8, 0.8, 0.8)
-    tooltip:AddDoubleLine(last.label, ns.formatNumber(last.dps) .. " DPS", 1, 1, 1, 1, 1, 1)
+    tooltip:AddDoubleLine(last.label, ns.formatRate(last.dps) .. " DPS", 1, 1, 1, 1, 1, 1)
   end
 end
 

@@ -8,7 +8,8 @@ local addText, textHeight = ns.ui.addText, ns.ui.textHeight
   until the next pull. Refreshed four times a second from a timer, never per combat event.
 
   Where the client withholds combat events it shows the game's damage meter for the current session instead
-  (Meter.lua). Those numbers are secret in combat: they go to SetText through ns.displayNumber, untouched.
+  (Meter.lua). Those numbers are secret in combat: they go to SetText through ns.meter.amountText and
+  ns.meter.rateText, never compared.
 ]]
 
 local P = {}
@@ -210,12 +211,12 @@ local function showMeter(v)
     setRow("Time", ns.formatTime(v.elapsed))
   end
   if m.found then
-    setRow("Damage", ns.displayNumber(m.damage))
-    setRow("DPS", ns.displayNumber(m.dps))
+    setRow("Damage", ns.meter.amountText(m.damage))
+    setRow("DPS", ns.meter.rateText(m.dps))
   end
   if worthShowing(m.healFound, m.healing) then
-    setRow("Healing", ns.displayNumber(m.healing))
-    setRow("HPS", ns.displayNumber(m.hps))
+    setRow("Healing", ns.meter.amountText(m.healing))
+    setRow("HPS", ns.meter.rateText(m.hps))
   end
   if not m.found and ns.meter.switchedOff() then
     frame.note:SetText(METER_OFF)
@@ -249,10 +250,10 @@ function P.refresh()
     setPortrait(boss)
     setRow("Time", ns.formatTime(v.elapsed))
     setRow("Damage", ns.formatNumber(v.damage))
-    setRow("DPS", ns.formatNumber(v.dps))
+    setRow("DPS", ns.formatRate(v.dps))
     setRow("Idle", idleText(v))
     if v.healing > 0 then
-      setRow("Healing", string.format("%s (%s HPS)", ns.formatNumber(v.healing), ns.formatNumber(v.hps)))
+      setRow("Healing", string.format("%s (%s HPS)", ns.formatNumber(v.healing), ns.formatRate(v.hps)))
     end
     if v.taken > 0 then
       setRow("Taken", ns.formatNumber(v.taken))
@@ -276,13 +277,13 @@ function P.refresh()
       setPortrait(last.boss and ns.intel.byKey(last.boss) or nil)
       setRow("Time", ns.formatTime(last.duration))
       setRow("Damage", ns.formatNumber(last.damage + last.petDamage))
-      setRow("DPS", ns.formatNumber(last.dps))
+      setRow("DPS", ns.formatRate(last.dps))
       setRow("Active", string.format("%d%%", math.floor(100 * last.active / math.max(0.001, last.duration) + 0.5)))
       if last.idle > 0 then
         setRow("Idle", string.format("%s, longest %s", ns.formatSeconds(last.idle), ns.formatSeconds(last.longestIdle)))
       end
       if last.healing + last.petHealing > 0 then
-        setRow("Healing", string.format("%s (%s HPS)", ns.formatNumber(last.healing + last.petHealing), ns.formatNumber(last.hps)))
+        setRow("Healing", string.format("%s (%s HPS)", ns.formatNumber(last.healing + last.petHealing), ns.formatRate(last.hps)))
       end
     else
       frame.title:SetText("Vigil")

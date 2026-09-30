@@ -73,7 +73,7 @@ describe("Vigil addon in a Lua VM", () => {
   it.each(["era", "tbc", "retail", "forever"] as Flavor[])("loads and starts without errors on the %s client", async (flavor) => {
     const a = await load(flavor);
     expect(await a.errors()).toEqual([]);
-    expect(await a.json("H.ns.version")).toBe("0.3.2");
+    expect(await a.json("H.ns.version")).toBe("0.3.3");
     expect(await a.json("VigilDB.version")).toBe(2);
     expect(await a.json("VigilLivePanel ~= nil and VigilMinimapButton ~= nil")).toBe(true);
     expect(await a.json("H.ns.intel.count")).toBeGreaterThan(200);
@@ -87,7 +87,7 @@ describe("Vigil addon in a Lua VM", () => {
     expect(await a.json("VigilPanel:IsShown()")).toBe(true);
     const height = await a.json<number>("VigilPanel:GetHeight()");
     expect(height).toBeGreaterThan(300);
-    expect(await a.json("GameTooltip.lines[1]")).toBe("Vigil | v0.3.2");
+    expect(await a.json("GameTooltip.lines[1]")).toBe("Vigil | v0.3.3");
   });
 
   it.each(["era", "tbc", "retail", "forever"] as Flavor[])("presses, drags and clicks the masked minimap button on the %s client", async (flavor) => {
@@ -172,7 +172,7 @@ describe("Vigil addon in a Lua VM", () => {
       expect(await a.json("VigilLivePanel.title:GetText()")).toMatch(/^Talbuk Stag/);
       const rows = await a.json<string[]>(`(function() local t = {} for i = 1, 4 do t[i] = VigilLivePanel.rows[i].label:GetText() .. "=" .. VigilLivePanel.rows[i].value:GetText() end return t end)()`);
       expect(rows[0]).toMatch(/^Time=0:\d\d$/);
-      expect(rows[2]).toMatch(/^DPS=\d+$/);
+      expect(rows[2]).toMatch(/^DPS=\d+\.\dK?$/);
       await a.run("VigilMinimapButton.scripts.OnEnter(VigilMinimapButton)");
       expect((await a.json<string[]>("GameTooltip.lines")).some((l) => l.startsWith("DPS | "))).toBe(true);
       const height = await a.json<number>("VigilLivePanel:GetHeight()");
@@ -351,7 +351,7 @@ describe("Vigil addon in a Lua VM", () => {
       await a.fire("PLAYER_REGEN_DISABLED");
       await a.fire("DAMAGE_METER_CURRENT_SESSION_UPDATED");
       await a.wait(0.3);
-      // In combat the amounts are secret: shown through AbbreviateNumbers, never compared or added up.
+      // In combat the amounts are secret: shown through AbbreviateNumbers with Vigil's breakpoints, never compared.
       expect(await a.json("H.isSecret(VigilLivePanel.rows[2].value:GetText())")).toBe(true);
       expect(await panelRows(a)).toEqual(["Time=0:10", "Damage=12.3K", "DPS=1.2K"]);
       expect(await a.json("VigilLivePanel.subtitle:GetText()")).toBe("In combat");
@@ -362,19 +362,50 @@ describe("Vigil addon in a Lua VM", () => {
       await a.run(`H.meter.healing = 5000 H.meter.hps = 500`);
       await a.fire("DAMAGE_METER_COMBAT_SESSION_UPDATED", 2, 1);
       await a.wait(0.3);
-      expect(await panelRows(a)).toEqual(["Time=0:10", "Damage=12.3K", "DPS=1.2K", "Healing=5.0K", "HPS=500"]);
+      expect(await panelRows(a)).toEqual(["Time=0:10", "Damage=12.3K", "DPS=1.2K", "Healing=5000", "HPS=500"]);
 
       // Out of combat the meter reads as plain numbers.
       await a.run(`H.inCombat = false`);
       await a.fire("PLAYER_REGEN_ENABLED");
       await a.wait(0.3);
-      expect(await panelRows(a)).toEqual(["Time=0:10", "Damage=12.3k", "DPS=1235", "Healing=5000", "HPS=500"]);
+      expect(await panelRows(a)).toEqual(["Time=0:10", "Damage=12.3K", "DPS=1.2K", "Healing=5000", "HPS=500.0"]);
       expect(await a.json("VigilLivePanel.subtitle:GetText()")).toBe("Last fight");
       await a.run(`VigilMinimapButton.scripts.OnEnter(VigilMinimapButton) SlashCmdList.VIGIL("status") SlashCmdList.VIGIL("")`);
-      expect(await a.json<string[]>("GameTooltip.lines")).toContain("Last fight | 1235 DPS");
+      expect(await a.json<string[]>("GameTooltip.lines")).toContain("Last fight | 1.2K DPS");
       expect((await a.chat()).some((l) => l.includes("from the game's damage meter"))).toBe(true);
       expect(await a.json("VigilPanel.calloutNote:GetText()")).toMatch(/idle warning is off/);
       expect(await a.json("#H.ns.fight.history + #VigilDB.fights")).toBe(0);
+      expect(await a.errors()).toEqual([]);
+    });
+
+    it("rounds the meter's DPS in and out of combat", async () => {
+      const a = await load("forever");
+      await a.run(`H.inCombat = true H.meter.damage = 203 H.meter.dps = 10.68421052636 H.meter.duration = 19`);
+      await a.fire("PLAYER_REGEN_DISABLED");
+      await a.wait(0.3);
+      // Blizzard's own call (AbbreviateLargeNumbers) would show "10.68421052636"; Vigil's breakpoints truncate.
+      expect(await a.json("H.plain(AbbreviateLargeNumbers(H.secret(10.68421052636)))")).toBe("10.68421052636");
+      expect(await a.json("H.isSecret(VigilLivePanel.rows[3].value:GetText())")).toBe(true);
+      expect(await panelRows(a)).toEqual(["Time=0:19", "Damage=203", "DPS=10.6"]);
+
+      await a.run(`H.inCombat = false`);
+      await a.fire("PLAYER_REGEN_ENABLED");
+      await a.wait(0.3);
+      expect(await panelRows(a)).toEqual(["Time=0:19", "Damage=203", "DPS=10.7"]);
+      await a.run(`VigilMinimapButton.scripts.OnEnter(VigilMinimapButton)`);
+      expect(await a.json<string[]>("GameTooltip.lines")).toContain("Last fight | 10.7 DPS");
+      expect(await a.errors()).toEqual([]);
+    });
+
+    it("falls back to string.format for a secret DPS when the client refuses Vigil's breakpoints", async () => {
+      const a = await load("forever", undefined, `
+        local abbreviate = AbbreviateNumbers
+        AbbreviateNumbers = function(n, options) if options then error("invalid breakpoints") end return abbreviate(n) end`);
+      await a.run(`H.inCombat = true H.meter.damage = 12345 H.meter.dps = 10.68421052636 H.meter.duration = 10`);
+      await a.fire("PLAYER_REGEN_DISABLED");
+      await a.wait(0.3);
+      expect(await a.json("H.isSecret(VigilLivePanel.rows[3].value:GetText())")).toBe(true);
+      expect(await panelRows(a)).toEqual(["Time=0:10", "Damage=12K", "DPS=10.7"]);
       expect(await a.errors()).toEqual([]);
     });
 

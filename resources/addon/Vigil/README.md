@@ -64,7 +64,7 @@ Vigil only shows information. It never casts, targets or clicks for you.
 
 ## SavedVariables
 
-`VigilDB.machineExport` is a JSON string: `{"version":1,"addon":"Vigil","addonVersion":"0.3.2","snapshots":[...]}`. Each snapshot has `at` (Unix seconds), `name`, `realm`, `guid`, `class`, `race`, `level`, `stats`, `gear` and `talents`. The site parses it with `src/lib/vigil/saved-variables.ts`.
+`VigilDB.machineExport` is a JSON string: `{"version":1,"addon":"Vigil","addonVersion":"0.3.3","snapshots":[...]}`. Each snapshot has `at` (Unix seconds), `name`, `realm`, `guid`, `class`, `race`, `level`, `stats`, `gear` and `talents`. The site parses it with `src/lib/vigil/saved-variables.ts`.
 
 `VigilDB` version 2 (0.3.0) adds `live`, `intel` and `callouts` settings and `fights`, the last 5 fight summaries (label, boss, duration, damage, DPS, healing, active and idle time). Version 1 data from 0.2.x is kept as it is.
 

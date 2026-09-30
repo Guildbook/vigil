@@ -1,5 +1,5 @@
 local ADDON_NAME, ns = ...
-local ADDON_VERSION = "0.3.2"
+local ADDON_VERSION = "0.3.3"
 ns.version = ADDON_VERSION
 
 local L, S, F, I = ns.logging, ns.snapshots, ns.fight, ns.intel
@@ -55,10 +55,10 @@ local function printFights()
     local f = history[i]
     local extra = ""
     if f.healing + f.petHealing > 0 then
-      extra = string.format(", %s HPS", ns.formatNumber(f.hps))
+      extra = string.format(", %s HPS", ns.formatRate(f.hps))
     end
     line(string.format("%s: %s, %s damage, %s DPS%s, idle %s", f.label, ns.formatTime(f.duration),
-      ns.formatNumber(f.damage + f.petDamage), ns.formatNumber(f.dps), extra, ns.formatSeconds(f.idle)))
+      ns.formatNumber(f.damage + f.petDamage), ns.formatRate(f.dps), extra, ns.formatSeconds(f.idle)))
   end
 end
 

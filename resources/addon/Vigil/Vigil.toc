@@ -2,7 +2,7 @@
 ## Title: Vigil
 ## Notes: Order of Saint Michael performance review. Live fight panel, boss intel and callouts in game; turns on combat logging and snapshots gear, talents and stats for the desktop app.
 ## Author: Order of Saint Michael
-## Version: 0.3.2
+## Version: 0.3.3
 ## Category: Combat
 ## IconTexture: Interface\AddOns\Vigil\Vigil
 ## X-Website: https://guildbook.io/vigil

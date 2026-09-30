@@ -8,8 +8,16 @@ local isSecret = ns.isSecret
 
   C_DamageMeter.GetCombatSessionFromType(sessionType, meterType) returns { combatSources = { source, ... },
   totalAmount, maxAmount, durationSeconds }; each source has isLocalPlayer (never secret), totalAmount and
-  amountPerSecond. In combat the amounts are secret values: Vigil passes them to the display (ns.displayNumber,
-  FontString:SetText) and never does arithmetic on them or compares them. Out of combat they read as numbers.
+  amountPerSecond. In combat the amounts are secret values: Vigil passes them to the display (M.amountText,
+  M.rateText, FontString:SetText) and never does arithmetic on them or compares them. Out of combat they read as
+  numbers.
+
+  Formatting a secret: tainted code may hand secrets to the client's C formatters marked SecretArguments =
+  AllowedWhenTainted and to string.format, and gets secret text back. Blizzard_DamageMeter formats both amounts
+  with AbbreviateLargeNumbers, which below its first breakpoint (1,000) returns the number unrounded
+  ("10.68421052636"), so Vigil first passes AbbreviateNumbers breakpoints of its own that round like
+  ns.formatNumber and ns.formatRate, then Blizzard's call, then string.format. Each formatter is tried once on
+  plain numbers and skipped when it errors or leaves more than two decimals.
 ]]
 
 local M = {}
@@ -24,6 +32,90 @@ local DAMAGE = meterTypes.DamageDone or 0
 local HEALING = meterTypes.HealingDone or 2
 
 M.EVENTS = { "DAMAGE_METER_COMBAT_SESSION_UPDATED", "DAMAGE_METER_CURRENT_SESSION_UPDATED", "DAMAGE_METER_RESET" }
+
+local function breakpoint(at, abbreviation, significandDivisor, fractionDivisor)
+  return {
+    breakpoint = at,
+    abbreviation = abbreviation,
+    significandDivisor = significandDivisor,
+    fractionDivisor = fractionDivisor,
+    abbreviationIsGlobal = false,
+  }
+end
+
+-- NumberAbbrevOptions for AbbreviateNumbers, largest breakpoint first; significand x fraction divisor is the
+-- breakpoint's order of magnitude.
+local AMOUNT_OPTIONS = {
+  breakpointData = { breakpoint(1000000, "M", 10000, 100), breakpoint(10000, "K", 100, 10), breakpoint(0, "", 1, 1) },
+}
+local RATE_OPTIONS = {
+  breakpointData = { breakpoint(1000000, "M", 10000, 100), breakpoint(1000, "K", 100, 10), breakpoint(0, "", 0.1, 10) },
+}
+
+local function call(name, ...)
+  return _G[name](...)
+end
+
+local AMOUNT_FORMATTERS = {
+  function(n) return call("AbbreviateNumbers", n, AMOUNT_OPTIONS) end,
+  function(n) return call("AbbreviateLargeNumbers", n) end,
+  function(n) return call("BreakUpLargeNumbers", n) end,
+  function(n) return string.format("%.0f", n) end,
+}
+local RATE_FORMATTERS = {
+  function(n) return call("AbbreviateNumbers", n, RATE_OPTIONS) end,
+  function(n) return call("AbbreviateLargeNumbers", n) end,
+  function(n) return string.format("%.1f", n) end,
+}
+
+local AMOUNT_PROBES = { 203, 1234, 12345, 1234567 }
+local RATE_PROBES = { 10.68421052636, 1234.5678, 12345.678, 1234567.891 }
+local usable = {}
+
+--- The formatter works on this client and rounds: tried once on plain numbers.
+local function rounds(format, probes)
+  if usable[format] == nil then
+    local good = true
+    for _, n in ipairs(probes) do
+      local ok, text = pcall(format, n)
+      if not ok or type(text) ~= "string" or text == "" or text:find("%d%.%d%d%d") then
+        good = false
+        break
+      end
+    end
+    usable[format] = good
+  end
+  return usable[format]
+end
+
+local function secretText(n, formatters, probes)
+  for _, format in ipairs(formatters) do
+    if rounds(format, probes) then
+      local ok, text = pcall(format, n)
+      if ok and text then
+        return text
+      end
+    end
+  end
+  return n
+end
+
+--- Display text for a damage or healing amount that may be secret. A secret result goes only to SetText: never
+--- compare or concatenate it.
+function M.amountText(n)
+  if isSecret(n) then
+    return secretText(n, AMOUNT_FORMATTERS, AMOUNT_PROBES)
+  end
+  return type(n) == "number" and ns.formatNumber(n) or ""
+end
+
+--- Display text for a DPS or HPS that may be secret, as M.amountText.
+function M.rateText(n)
+  if isSecret(n) then
+    return secretText(n, RATE_FORMATTERS, RATE_PROBES)
+  end
+  return type(n) == "number" and ns.formatRate(n) or ""
+end
 
 --- The client has the damage meter API.
 function M.exists()
