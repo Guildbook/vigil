@@ -80,12 +80,12 @@ export class VigilTray {
         ? { type: "separator" }
         : item.type === "info"
           ? { label: item.label, enabled: false }
-          : { label: item.label, enabled: item.enabled ?? true, click: () => void this.run(item.action) },
+          : { label: item.label, enabled: item.enabled ?? true, click: () => void this.run(item.action, item.url) },
     );
     this.tray.setContextMenu(Menu.buildFromTemplate(template));
   }
 
-  private async run(action: TrayAction) {
+  private async run(action: TrayAction, url?: string) {
     const state = this.deps.state();
     switch (action) {
       case "open":
@@ -97,9 +97,11 @@ export class VigilTray {
       case "open-logs":
         if (state.logsDir) void shell.openPath(state.logsDir);
         return;
-      case "open-site":
-        if (state.server.siteUrl) this.deps.openExternal(state.server.siteUrl);
+      case "open-site": {
+        const site = url ?? state.server.siteUrl;
+        if (site) this.deps.openExternal(site);
         return;
+      }
       case "check-updates":
         return this.checkForUpdates();
       case "install-update":

@@ -72,7 +72,7 @@ function parsePairLink(url: string | undefined) {
 }
 
 function openExternal(url: string) {
-  if (companion && canOpenExternally(url, companion.trust, companion.pairedSite)) void shell.openExternal(url);
+  if (companion && canOpenExternally(url, companion.trust, companion.pairedSites)) void shell.openExternal(url);
 }
 
 /**
@@ -239,7 +239,7 @@ if (!app.requestSingleInstanceLock()) {
       if (result.ok) pendingLink = null;
       return result;
     });
-    ipcMain.handle("unpair", () => companion!.unpair());
+    ipcMain.handle("unpair", (_e, pairingId?: unknown) => companion!.unpair(typeof pairingId === "string" ? pairingId : undefined));
     ipcMain.handle("open-external", (_e, url: string) => openExternal(String(url)));
     ipcMain.handle("update:install", () => installAndRestart());
     ipcMain.handle("pick-folder", async () => {

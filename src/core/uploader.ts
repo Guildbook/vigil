@@ -9,14 +9,17 @@ export interface UploadTarget {
   token: string;
   guild: string | null;
   visibility: "private" | "officers" | "guild" | null;
+  /** The pairing the token belongs to, when the device is paired with several guilds. */
+  pairingId?: string;
 }
 
 export interface UploaderDeps {
   fetch: typeof fetch;
-  target: () => UploadTarget | null;
+  /** Where this fight goes; null holds the queue until a pairing exists. */
+  target: (id: string, report: FightReport) => UploadTarget | null;
   onStatus: (id: string, state: UploadState) => void;
   /** The site no longer accepts this device (revoked, or the member left). */
-  onUnauthorized: (message: string) => void;
+  onUnauthorized: (message: string, target: UploadTarget) => void;
   setTimer?: (fn: () => void, ms: number) => unknown;
 }
 
@@ -72,7 +75,7 @@ export class Uploader {
     if (this.busy || this.waiting || this.paused) return;
     const job = this.queue[0];
     if (!job) return;
-    const target = this.deps.target();
+    const target = this.deps.target(job.id, job.report);
     if (!target) return;
     const invalid = formatProblem(job.report);
     if (invalid) {
@@ -94,14 +97,14 @@ export class Uploader {
       if (res.ok && body.url) {
         this.queue.shift();
         this.deps.onStatus(job.id, { state: "uploaded", url: body.url, ...(body.warning ? { warning: body.warning } : {}) });
-      } else if (res.status === 409 && body.code === "version_mismatch") {
+      } else if (res.status >= 400 && res.status < 500 && body.code === "version_mismatch") {
         this.queue.shift();
         this.deps.onStatus(job.id, { state: "failed", error: `Not uploaded: ${body.error ?? "this log is from another game than your guild's."}`, retrying: false, final: true });
       } else if (res.status === 401 || res.status === 403) {
         this.queue.shift();
         const error = body.error ?? "The site refused this companion.";
         this.deps.onStatus(job.id, { state: "failed", error, retrying: false });
-        this.deps.onUnauthorized(error);
+        this.deps.onUnauthorized(error, target);
       } else if (res.status === 429 || res.status >= 500) {
         const after = Number(res.headers.get("retry-after"));
         retryIn = this.backoff(job);

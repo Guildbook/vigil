@@ -62,4 +62,12 @@ describe("canOpenExternally", () => {
     expect(canOpenExternally("file:///etc/passwd", release, null)).toBe(false);
     expect(canOpenExternally("http://localhost:3000/", release, null)).toBe(false);
   });
+
+  it("opens reports on the custom domain of any paired guild", () => {
+    const sites = ["https://order.example", "https://mirkwood.example"];
+    expect(canOpenExternally("https://mirkwood.example/vigil/reports/2", release, sites)).toBe(true);
+    expect(canOpenExternally("https://order.example/vigil/reports/1", release, sites)).toBe(true);
+    expect(canOpenExternally("https://other.example/", release, sites)).toBe(false);
+    expect(canOpenExternally("https://order.example/", release, [])).toBe(false);
+  });
 });

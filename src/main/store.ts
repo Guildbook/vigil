@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { app, safeStorage } from "electron";
 import { trustedSiteOrigin, validHomeUrl, type TrustConfig } from "../core/origins";
+import { loadPairingsFrom, type LegacyPairing, type Pairing, type PairingsFile } from "../core/pairings";
 import type { Settings } from "../core/protocol";
 
 /** Set by scripts/build.mjs: the home server for release builds, already validated as a public HTTPS origin. */
@@ -82,57 +83,66 @@ export function markSeen(hint: string) {
   writeJson("seen.json", { ...readJson<Record<string, boolean>>("seen.json"), [hint]: true });
 }
 
-export interface PairingRecord {
-  /** The guild's own site as the home server named it, for links. API calls always go to the home server. */
-  siteUrl: string | null;
-  guild: { slug: string; name: string };
-  device: { id: string; name: string };
+/**
+ * The paired guilds, from `pairings.json`. A 0.4.0 install has a single `pairing.json` instead: it becomes the
+ * first entry (its token stays in `device-token.bin`), `pairings.json` is written and the old file removed.
+ */
+export function loadPairings(config: TrustConfig): Pairing[] {
+  const saved = readJson<PairingsFile>("pairings.json");
+  const legacy = saved ? null : readJson<LegacyPairing>("pairing.json");
+  const { pairings, migrated } = loadPairingsFrom(saved, legacy, new Date());
+  const trusted = pairings.map((p) => ({ ...p, siteUrl: trustedSiteOrigin(p.siteUrl, config, { vouched: true }) }));
+  if (migrated) {
+    try {
+      savePairings(trusted);
+      rmSync(file("pairing.json"), { force: true });
+    } catch {
+      // Read again from pairing.json next time.
+    }
+  }
+  return trusted;
 }
 
-export function loadPairing(config: TrustConfig): PairingRecord | null {
-  const p = readJson<PairingRecord>("pairing.json");
-  if (!p?.guild || !p.device) return null;
-  return { guild: p.guild, device: p.device, siteUrl: trustedSiteOrigin(p.siteUrl, config, { vouched: true }) };
-}
-
-export function savePairing(p: PairingRecord | null) {
-  if (p) writeJson("pairing.json", p);
-  else rmSync(file("pairing.json"), { force: true });
+export function savePairings(pairings: readonly Pairing[]) {
+  const data: PairingsFile = { version: 2, pairings: [...pairings] };
+  writeJson("pairings.json", data);
 }
 
 /**
- * The device token, encrypted with Electron safeStorage (Keychain on macOS, DPAPI on Windows, the secret
- * service on Linux). Without OS encryption the token stays in memory for this run and is never written.
+ * Device tokens, one file per pairing, each encrypted with Electron safeStorage (Keychain on macOS, DPAPI on
+ * Windows, the secret service on Linux). Without OS encryption tokens stay in memory for this run and are never
+ * written.
  */
 export class TokenStore {
-  private memory: string | null = null;
-  private read = false;
+  private readonly memory = new Map<string, string | null>();
 
   get storage(): "keychain" | "memory" {
     return safeStorage.isEncryptionAvailable() ? "keychain" : "memory";
   }
 
-  load(): string | null {
-    if (this.memory || this.read) return this.memory;
-    this.read = true;
-    if (!safeStorage.isEncryptionAvailable()) return null;
-    try {
-      this.memory = safeStorage.decryptString(readFileSync(file("device-token.bin")));
-      return this.memory;
-    } catch {
-      return null;
+  load(tokenFile: string): string | null {
+    if (this.memory.has(tokenFile)) return this.memory.get(tokenFile) ?? null;
+    let token: string | null = null;
+    if (safeStorage.isEncryptionAvailable()) {
+      try {
+        token = safeStorage.decryptString(readFileSync(file(tokenFile)));
+      } catch {
+        token = null;
+      }
     }
+    this.memory.set(tokenFile, token);
+    return token;
   }
 
-  save(token: string) {
-    this.memory = token;
+  save(tokenFile: string, token: string) {
+    this.memory.set(tokenFile, token);
     if (!safeStorage.isEncryptionAvailable()) return;
     mkdirSync(app.getPath("userData"), { recursive: true });
-    writeFileSync(file("device-token.bin"), safeStorage.encryptString(token), { mode: 0o600 });
+    writeFileSync(file(tokenFile), safeStorage.encryptString(token), { mode: 0o600 });
   }
 
-  clear() {
-    this.memory = null;
-    rmSync(file("device-token.bin"), { force: true });
+  clear(tokenFile: string) {
+    this.memory.delete(tokenFile);
+    rmSync(file(tokenFile), { force: true });
   }
 }

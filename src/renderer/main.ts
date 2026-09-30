@@ -5,7 +5,8 @@ import type { Boss, BossAbility, Instance } from "../data/bosses";
 import { ADDON_ACTION_LABEL, addonStatus } from "../core/addon-status";
 import type { GroupAbilityView, GroupFightView, GroupPlayerView } from "../core/group";
 import { bossByKey, bossesByInstance, instanceById, searchBosses, type InstanceGroup } from "../core/intel";
-import type { AppState, CompanionBridge, FightSummary, Identity, Settings } from "../core/protocol";
+import { groupByVersion, pickPairing } from "../core/pairings";
+import type { AppState, CompanionBridge, FightSummary, Identity, PairResult, Settings } from "../core/protocol";
 
 declare global {
   interface Window {
@@ -29,6 +30,8 @@ let meter: "damage" | "healing" = "damage";
 let seenCallouts = new Set<string>();
 let pairLink: { code: string } | null = null;
 let pairMessage: { ok: boolean; text: string } | null = null;
+/** The pairing form is open under the paired guilds. */
+let addingGuild = false;
 let addonMessage: { ok: boolean; text: string } | null = null;
 
 const esc = (s: unknown) =>
@@ -113,14 +116,13 @@ function gameBadge(v: LogGameVersion) {
   return `<span class="game-badge" title="${esc(LOG_VERSION_LABELS[v])}" data-version="${v}">${GAME_SHORT[v]}</span>`;
 }
 
-/** One line under the header when the log is from another game than the paired guild's. */
+/** One line under the header when the log's fights would go to a guild of another game (no guild paired for it). */
 function renderGameMismatch(s: AppState) {
   const log = s.engine?.log.gameVersion ?? null;
-  const guild = s.pairing.paired ? s.pairing.guild : null;
-  if (!log || !guild?.gameVersion || log === guild.gameVersion) return "";
-  return `<div class="update game-mismatch">This log is from ${esc(LOG_VERSION_LABELS[log])}, but ${esc(guild.name)} is a ${esc(
-    LOG_VERSION_LABELS[guild.gameVersion],
-  )} guild. Uploads are kept with a warning until WoW: Forever launches, then refused. Pair Vigil with your ${esc(LOG_VERSION_LABELS[log])} guild.</div>`;
+  if (!log || !s.pairing.paired) return "";
+  const route = pickPairing(s.pairing.pairings, log);
+  if (!route.mismatch || !route.warning) return "";
+  return `<div class="update game-mismatch">${esc(route.warning)} Until WoW: Forever launches such uploads are kept with a warning; after that they are refused.</div>`;
 }
 
 /** Top right: the recording character's class icon, with the faction as a badge when it is known. */
@@ -274,19 +276,24 @@ function renderCallouts(s: AppState) {
   return `<section class="panel"><h2>Callouts</h2>${items ? `<ul class="callouts">${items}</ul>` : `<p class="empty">Missed procs, idle time and dropped buffs appear here.</p>`}</section>`;
 }
 
-function uploadLine(f: FightSummary) {
+/** With several guilds paired, each fight says which one it went to, and why when that was a fallback. */
+function uploadLine(f: FightSummary, severalGuilds: boolean) {
   const u = f.upload;
+  const to = severalGuilds && f.destination ? ` to ${esc(f.destination.guild)}` : "";
+  const routeWarning = f.destination?.warning ? `<div class="upload-warning">${esc(f.destination.warning)}</div>` : "";
   switch (u.state) {
     case "uploaded":
-      return `<div class="upload">Uploaded. <button class="link" data-open="${esc(u.url)}">Open report</button>${u.warning ? `<div class="upload-warning">${esc(u.warning)}</div>` : ""}</div>`;
+      return `<div class="upload">Uploaded${to}. <button class="link" data-open="${esc(u.url)}">Open report</button>${
+        u.warning ? `<div class="upload-warning">${esc(u.warning)}</div>` : routeWarning
+      }</div>`;
     case "failed":
       return `<div class="upload bad">${esc(u.error)}${u.retrying ? " Retrying." : u.final ? "" : ` <button class="link" data-retry="${esc(f.id)}">Retry</button>`}</div>`;
     case "skipped":
       return `<div class="upload">${esc(u.reason)}</div>`;
     case "uploading":
-      return `<div class="upload">Uploading</div>`;
+      return `<div class="upload">Uploading${to}${routeWarning}</div>`;
     default:
-      return `<div class="upload">Waiting to upload</div>`;
+      return `<div class="upload">Waiting to upload${to}${routeWarning}</div>`;
   }
 }
 
@@ -305,7 +312,7 @@ function renderFights(s: AppState) {
           <div class="detail">${clock(f.durationMs)}, ${pct(f.gcdUsage)} GCD, ${num(f.perSecond)} ${metricUnit(f.metric)}${f.modelLabel ? `, ${esc(f.modelLabel)}` : ""}${
             g?.deaths.length ? `, ${g.deaths.length} ${g.deaths.length === 1 ? "death" : "deaths"}` : ""
           }</div>
-          ${uploadLine(f)}
+          ${uploadLine(f, s.pairing.pairings.length > 1)}
         </div>
         <button class="icon" data-detail="${esc(f.id)}" title="Fight details">Details</button>
       </li>`;
@@ -641,25 +648,68 @@ function msg(m: { ok: boolean; text: string } | null) {
   return m ? `<div class="msg ${m.ok ? "ok" : "err"}">${esc(m.text)}</div>` : "";
 }
 
+/** Paired guilds grouped by game version, each with its own Unpair, and the form to add one. */
+function renderPairings(s: AppState) {
+  const p = s.pairing;
+  const form = `
+      <label class="field">Pairing code<input id="pair-code" value="${esc(pairLink?.code ?? "")}" placeholder="ABCD-EFGH" spellcheck="false" autocomplete="off" /></label>
+      <button class="primary" data-act="pair">Pair</button>
+      ${s.server.dev ? `<p class="note">Development build, pairing with ${esc(s.server.homeUrl)}.</p>` : ""}`;
+  if (!p.paired) {
+    return `
+      <p class="note">On your guild's site, open Vigil, then Connect Vigil companion, and create a pairing code. The code tells Vigil which guild it belongs to.</p>
+      ${form}
+      ${p.error ? `<div class="msg err">${esc(p.error)}</div>` : ""}`;
+  }
+  const groups = groupByVersion(p.pairings)
+    .map(
+      (g) => `
+      <h3 class="sub-h">${esc(g.label)}</h3>
+      ${g.pairings
+        .map(
+          (x) => `
+        <div class="row pairing">
+          <div class="grow">
+            <div><strong>${esc(x.guild.name)}</strong>${x.user?.name ? ` as ${esc(x.user.name)}` : ""}</div>
+            <div class="path">This computer is listed as "${esc(x.device.name)}" on the site, where you can revoke it.</div>
+          </div>
+          ${x.siteUrl ? `<button data-open="${esc(x.siteUrl)}/vigil" title="Open Vigil on ${esc(x.guild.name)}'s site">Open site</button>` : ""}
+          <button data-unpair="${esc(x.id)}">Unpair</button>
+        </div>
+        ${x.error ? `<div class="msg err">${esc(x.error)}</div>` : ""}`,
+        )
+        .join("")}`,
+    )
+    .join("");
+  const storage = `<p class="note">${
+    p.storage === "keychain" ? "Tokens are kept in the system keychain." : "No system keychain is available, so you will need to pair again after a restart."
+  } Fights upload to the guild of the game their log is from.</p>`;
+  const add =
+    addingGuild || pairLink
+      ? `
+      <h3 class="sub-h">Add another guild</h3>
+      <p class="note">Create a pairing code on the other guild's site. Vigil keeps one guild per game, so a guild of a game already listed replaces it.</p>
+      ${form}`
+      : `<div class="row end"><button data-act="add-guild">Add another guild</button></div>`;
+  return groups + storage + add;
+}
+
+function pairedMessage(r: PairResult): string {
+  if (!r.guild) return "Paired. Fights will upload to your guild.";
+  const game = r.guild.gameVersion ? LOG_VERSION_LABELS[r.guild.gameVersion] : null;
+  const replaced = (r.replaced ?? []).map((g) => g.name).join(" and ");
+  return [
+    `Paired with ${r.guild.name}${game ? ` (${game})` : ""}.`,
+    game ? `Fights from ${game} upload there.` : "Fights will upload to your guild.",
+    replaced ? `It replaces ${replaced} on this computer; revoke the old device on that guild's site if you no longer use it.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 function renderSettings(s: AppState) {
   const p = s.pairing;
   const set = s.settings;
-  const pairing = p.paired
-    ? `
-      <p>Paired with ${s.identity?.faction ? factionIcon(s.identity.faction, 16) + " " : ""}<strong>${esc(p.guild?.name)}</strong>${p.user?.name ? ` as ${esc(p.user.name)}` : ""}.${
-        s.server.siteUrl ? ` <button class="link" data-open="${esc(s.server.siteUrl)}/vigil">Open Vigil on the site</button>` : ""
-      }</p>
-      <p class="note">This computer is listed as "${esc(p.device?.name)}" on the site, where you can revoke it. ${
-        p.storage === "keychain" ? "The token is kept in the system keychain." : "No system keychain is available, so you will need to pair again after a restart."
-      }</p>
-      ${p.error ? `<div class="msg err">${esc(p.error)}</div>` : ""}
-      <button data-act="unpair">Unpair</button>`
-    : `
-      <p class="note">On your guild's site, open Vigil, then Connect Vigil companion, and create a pairing code. The code tells Vigil which guild it belongs to.</p>
-      <label class="field">Pairing code<input id="pair-code" value="${esc(pairLink?.code ?? "")}" placeholder="ABCD-EFGH" spellcheck="false" autocomplete="off" /></label>
-      <button class="primary" data-act="pair">Pair</button>
-      ${s.server.dev ? `<p class="note">Development build, pairing with ${esc(s.server.homeUrl)}.</p>` : ""}
-      ${p.error ? `<div class="msg err">${esc(p.error)}</div>` : ""}`;
 
   const options = s.logsOptions
     .map((o) => `<option value="${esc(o.logsDir)}" ${o.logsDir === s.logsDir ? "selected" : ""}>${esc(o.label)}${o.latestLog ? `, last log ${new Date(o.latestAt!).toLocaleDateString()}` : ""}</option>`)
@@ -695,7 +745,7 @@ function renderSettings(s: AppState) {
     : `<p class="empty">No World of Warcraft install found.</p>`;
 
   return `
-    <section class="panel"><h2>${p.paired ? "Site" : "Pair with the site"}</h2>${pairing}${msg(pairMessage)}</section>
+    <section class="panel"><h2>${p.paired ? "Guilds" : "Pair with the site"}</h2>${renderPairings(s)}${msg(pairMessage)}</section>
     <section class="panel">
       <h2>Combat log</h2>
       <label class="field">Logs folder
@@ -742,6 +792,7 @@ function go(next: typeof view) {
   if (next === "settings" && view !== "settings") {
     pairMessage = null;
     addonMessage = null;
+    addingGuild = false;
   }
   if (next !== "fight") detailId = null;
   view = next;
@@ -754,7 +805,7 @@ let scrollToTop = false;
 function focusKey(): string | null {
   const el = document.activeElement;
   if (!(el instanceof HTMLButtonElement) || !root.contains(el)) return null;
-  for (const name of ["view", "act", "detail", "boss", "kind", "instance", "meter", "intel", "group"]) {
+  for (const name of ["view", "act", "detail", "boss", "kind", "instance", "meter", "intel", "group", "unpair"]) {
     const v = el.dataset[name];
     if (v) return `button[data-${name}="${CSS.escape(v)}"]`;
   }
@@ -837,6 +888,12 @@ root.addEventListener("click", async (e) => {
     go(el.dataset.view as Tab);
     return render();
   }
+  if (el.dataset.unpair) {
+    await api.unpair(el.dataset.unpair);
+    pairMessage = null;
+    state = await api.getState();
+    return render();
+  }
   if (el.dataset.addon) {
     const r = await api.installAddon(el.dataset.addon);
     addonMessage = { ok: r.ok, text: r.message };
@@ -862,18 +919,22 @@ root.addEventListener("click", async (e) => {
       const code = (document.getElementById("pair-code") as HTMLInputElement).value;
       el.setAttribute("disabled", "");
       const r = await api.pair({ code });
-      pairMessage = r.ok ? { ok: true, text: "Paired. Fights will upload to your guild." } : { ok: false, text: r.error ?? "Pairing failed." };
-      if (r.ok) pairLink = null;
+      pairMessage = r.ok ? { ok: true, text: pairedMessage(r) } : { ok: false, text: r.error ?? "Pairing failed." };
+      if (r.ok) {
+        pairLink = null;
+        addingGuild = false;
+      }
       state = await api.getState();
       break;
     }
+    case "add-guild":
+      addingGuild = true;
+      pairMessage = null;
+      render();
+      document.getElementById("pair-code")?.focus();
+      return;
     case "install-update":
       return void api.installUpdate();
-    case "unpair":
-      await api.unpair();
-      pairMessage = null;
-      state = await api.getState();
-      break;
     case "browse": {
       const dir = await api.pickFolder();
       if (dir) await update({ logsDirOverride: dir });

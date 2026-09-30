@@ -117,6 +117,37 @@ describe("Uploader", () => {
   });
 });
 
+describe("Uploader with several paired guilds", () => {
+  it("asks for each fight's target and sends it with that guild's token, reporting refusals for that pairing", async () => {
+    const calls: { auth: string | null; guild: string }[] = [];
+    const refused: [string, string | undefined][] = [];
+    const targets: Record<string, UploadTarget> = {
+      forever: { apiUrl: "http://site.test", token: "tok_order", guild: "order", visibility: null, pairingId: "dev-order" },
+      anniversary: { apiUrl: "http://site.test", token: "tok_mirk", guild: "mirkwood", visibility: null, pairingId: "dev-mirkwood" },
+    };
+    const responses = [json(201, { url: "u1" }), json(401, { error: "revoked" })];
+    const up = new Uploader({
+      fetch: (async (_url: string, init: RequestInit) => {
+        calls.push({ auth: new Headers(init.headers).get("authorization"), guild: JSON.parse(String(init.body)).guild });
+        return responses.shift()!;
+      }) as typeof fetch,
+      target: (id) => targets[id.split(":")[0]!] ?? null,
+      onStatus: () => {},
+      onUnauthorized: (message, t) => refused.push([message, t.pairingId]),
+      setTimer: () => {},
+    });
+    up.enqueue("anniversary:1", boar!);
+    up.enqueue("forever:1", boar!);
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toEqual([
+      { auth: "Bearer tok_mirk", guild: "mirkwood" },
+      { auth: "Bearer tok_order", guild: "order" },
+    ]);
+    expect(refused).toEqual([["revoked", "dev-order"]]);
+  });
+});
+
 describe("skipReason", () => {
   const settings = { autoUpload: true, minFightSeconds: 20 };
   it("skips short trash, never bosses, and nothing when auto-upload is off or unpaired", () => {
@@ -212,6 +243,20 @@ describe("Uploader and the guild's game version", () => {
     h.up.enqueue("f1", boar!);
     await h.flush();
     expect(h.statuses.at(-1)![1]).toEqual({ state: "uploaded", url: "u", warning });
+  });
+
+  it("treats a version_mismatch refusal as final whatever the 4xx status, without unpairing", async () => {
+    const h = harness([json(422, { error: "Other game.", code: "version_mismatch" }), json(403, { error: "Other game.", code: "version_mismatch" })]);
+    h.up.enqueue("f1", boar!);
+    h.up.enqueue("f2", boar!);
+    await h.flush();
+    await h.flush();
+    expect(h.statuses.filter(([, s]) => s.state === "failed").map(([, s]) => s)).toEqual([
+      { state: "failed", error: "Not uploaded: Other game.", retrying: false, final: true },
+      { state: "failed", error: "Not uploaded: Other game.", retrying: false, final: true },
+    ]);
+    expect(h.unauthorized()).toBeNull();
+    expect(h.timers).toHaveLength(0);
   });
 
   it("treats a refused mismatch as final, without a retry", async () => {

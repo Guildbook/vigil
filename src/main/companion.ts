@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import type { Faction, WowClass } from "@/lib/game";
-import type { LogGameVersion } from "@/lib/vigil/game-version";
+import { reportGameVersion } from "@/lib/vigil/game-version";
 import type { Callout, CompletedFight } from "@/lib/vigil/live";
 import type { FightReport } from "@/lib/vigil/report";
 import { ROTATION_MODELS } from "@/lib/vigil/rotations";
@@ -11,11 +11,12 @@ import { installAddon, installedVersion, pickAddonSource, readTocVersion, ADDON_
 import { CompanionEngine, type EngineSnapshot } from "../core/engine";
 import { factionFromClasses, type GroupFightView } from "../core/group";
 import { SpellIcons } from "../core/media";
-import type { AppState, FightSummary, Identity, PairingState, Settings, UpdateState, UploadState } from "../core/protocol";
-import { asBossFight, skipReason, Uploader } from "../core/uploader";
+import { addPairing, asGameVersion, defaultPairing, pickPairing, setGameVersion, tokenFileFor, type Pairing } from "../core/pairings";
+import type { AppState, FightSummary, Identity, PairResult, PairingState, Settings, UpdateState, UploadState } from "../core/protocol";
+import { asBossFight, skipReason, Uploader, type UploadTarget } from "../core/uploader";
 import { discoverLogsCandidates, resolveLogsDir, wowRootCandidates, type LogsCandidate } from "../core/wow-paths";
 import { trustedSiteOrigin, type TrustConfig } from "../core/origins";
-import { loadPairing, loadSettings, loginItemsSupported, savePairing, saveSettings, TokenStore, trustConfig, type PairingRecord } from "./store";
+import { loadPairings, loadSettings, loginItemsSupported, savePairings, saveSettings, TokenStore, trustConfig } from "./store";
 
 const MAX_FIGHTS = 50;
 const MAX_CALLOUTS = 40;
@@ -24,7 +25,7 @@ const MAX_GROUP_FIGHTS = 15;
 interface Profile {
   /** The guild's canonical site, which changes when the guild verifies a custom domain. */
   siteUrl?: string;
-  guild: { slug: string; name: string; gameVersion?: LogGameVersion };
+  guild: { slug: string; name: string; gameVersion?: string | null };
   user: { name: string | null };
   device: { id: string; name: string };
   defaultVisibility: "private" | "officers" | "guild";
@@ -39,9 +40,12 @@ export class Companion {
   settings: Settings = loadSettings();
   readonly trust: TrustConfig = trustConfig();
   private readonly tokens = new TokenStore();
-  private pairing: PairingRecord | null = loadPairing(this.trust);
-  private profile: Profile | null = null;
-  private pairingError: string | null = null;
+  private pairings: Pairing[] = loadPairings(this.trust);
+  /** By pairing id: the site's profile, and why the site refused or could not be reached. */
+  private readonly profiles = new Map<string, Profile>();
+  private readonly pairingErrors = new Map<string, string>();
+  /** By fight id: the pairing picked for its upload, kept for retries. */
+  private readonly routes = new Map<string, string>();
   private engine: CompanionEngine | null = null;
   private snapshot: EngineSnapshot | null = null;
   private logsDir: string | null = null;
@@ -59,20 +63,12 @@ export class Companion {
   constructor(private readonly broadcast: (state: AppState) => void) {
     this.uploader = new Uploader({
       fetch,
-      target: () => {
-        const token = this.tokens.load();
-        if (!token || !this.pairing) return null;
-        return {
-          apiUrl: this.trust.homeUrl,
-          token,
-          guild: this.pairing.guild.slug,
-          visibility: this.settings.visibility === "default" ? null : this.settings.visibility,
-        };
-      },
+      target: (id, report) => this.uploadTarget(id, report),
       onStatus: (id, state) => this.setUpload(id, state),
-      onUnauthorized: (message) => {
-        this.pairingError = message;
-        this.profile = null;
+      onUnauthorized: (message, target) => {
+        if (!target.pairingId) return;
+        this.pairingErrors.set(target.pairingId, message);
+        this.profiles.delete(target.pairingId);
         this.push();
       },
     });
@@ -80,8 +76,29 @@ export class Companion {
 
   start() {
     this.rescan(true);
-    void this.refreshProfile();
+    void this.refreshProfiles();
     this.timer = setInterval(() => this.tick(), 1000);
+  }
+
+  /** Pairings with a token this run can use (without OS encryption, tokens do not survive a restart). */
+  private usablePairings(): Pairing[] {
+    return this.pairings.filter((p) => this.tokens.load(p.tokenFile));
+  }
+
+  /** The pairing picked when the fight finished, or a fresh pick if that one has been unpaired since. */
+  private uploadTarget(id: string, report: FightReport): UploadTarget | null {
+    const usable = this.usablePairings();
+    const pairing = usable.find((p) => p.id === this.routes.get(id)) ?? pickPairing(usable, reportGameVersion(report)).pairing;
+    const token = pairing ? this.tokens.load(pairing.tokenFile) : null;
+    if (!pairing || !token) return null;
+    this.routes.set(id, pairing.id);
+    return {
+      apiUrl: this.trust.homeUrl,
+      token,
+      guild: pairing.guild.slug,
+      visibility: this.settings.visibility === "default" ? null : this.settings.visibility,
+      pairingId: pairing.id,
+    };
   }
 
   stop() {
@@ -124,7 +141,11 @@ export class Companion {
   }
 
   private knownClass(name: string): WowClass | null {
-    return this.profile?.characters.find((c) => c.name.toLowerCase() === name.toLowerCase())?.wowClass ?? null;
+    for (const profile of this.profiles.values()) {
+      const found = profile.characters.find((c) => c.name.toLowerCase() === name.toLowerCase());
+      if (found) return found.wowClass;
+    }
+    return null;
   }
 
   private sessionOptions() {
@@ -169,7 +190,9 @@ export class Companion {
   private onFight({ report: analysed, callouts }: CompletedFight) {
     const report = asBossFight(analysed);
     const id = `${Date.parse(report.fight.startedAt)}-${report.fight.label}`;
-    const reason = skipReason(report, this.settings, Boolean(this.pairing && this.tokens.load() && !this.pairingError));
+    const route = pickPairing(this.usablePairings(), reportGameVersion(report));
+    const pairing = route.pairing;
+    const reason = skipReason(report, this.settings, Boolean(pairing && !this.pairingErrors.has(pairing.id)));
     const summary: FightSummary = {
       id,
       label: report.fight.label,
@@ -183,21 +206,44 @@ export class Companion {
       gcdUsage: report.activity.gcdUsage,
       callouts: callouts.slice(0, 3).map((c) => c.text),
       upload: reason ? { state: "skipped", reason } : { state: "queued" },
+      destination: pairing ? { pairingId: pairing.id, guild: pairing.guild.name, gameVersion: pairing.guild.gameVersion, warning: route.warning } : null,
       encounterId: report.fight.encounter?.id ?? null,
       groupId: null,
     };
     summary.groupId = this.groupFor(summary);
     this.fights.unshift(summary);
     this.reports.set(id, report);
-    for (const old of this.fights.splice(MAX_FIGHTS)) this.reports.delete(old.id);
+    if (pairing) this.routes.set(id, pairing.id);
+    for (const old of this.fights.splice(MAX_FIGHTS)) {
+      this.reports.delete(old.id);
+      this.routes.delete(old.id);
+    }
     if (!reason) this.uploader.enqueue(id, report);
     this.push();
   }
 
   private setUpload(id: string, upload: UploadState) {
     const f = this.fights.find((x) => x.id === id);
-    if (f) f.upload = upload;
+    const pairing = this.pairings.find((p) => p.id === this.routes.get(id));
+    if (f) {
+      f.upload = upload;
+      if (pairing && f.destination?.pairingId !== pairing.id) {
+        f.destination = { pairingId: pairing.id, guild: pairing.guild.name, gameVersion: pairing.guild.gameVersion, warning: null };
+      }
+    }
+    if (upload.state === "uploaded" && pairing) {
+      pairing.lastUsedAt = new Date().toISOString();
+      this.persistPairings();
+    }
     this.push();
+  }
+
+  private persistPairings() {
+    try {
+      savePairings(this.pairings);
+    } catch (err) {
+      console.warn(`Could not save pairings: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   retryUpload(id: string) {
@@ -221,7 +267,12 @@ export class Companion {
   }
 
   /** The code names the guild, so pairing always asks the home server; it answers with the guild's own site. */
-  async pair(code: string): Promise<{ ok: boolean; error?: string }> {
+  /**
+   * The code names the guild, so pairing always asks the home server; it answers with the guild's own site. A
+   * guild of a game version already paired replaces that pairing (the code is spent by then, so there is no
+   * asking first; the window says what was replaced).
+   */
+  async pair(code: string): Promise<PairResult> {
     const base = this.trust.homeUrl;
     if (!code.trim()) return { ok: false, error: "Enter the pairing code from your guild's site." };
     try {
@@ -234,24 +285,53 @@ export class Companion {
         token?: string;
         error?: string;
         siteUrl?: string;
-        device?: PairingRecord["device"];
-        guild?: PairingRecord["guild"];
+        device?: { id?: string; name?: string };
+        guild?: { slug?: string; name?: string; gameVersion?: string | null };
       };
-      if (!res.ok || !body.token || !body.device || !body.guild) return { ok: false, error: body.error ?? `Pairing failed (${res.status}).` };
-      this.tokens.save(body.token);
-      this.pairing = { siteUrl: trustedSiteOrigin(body.siteUrl, this.trust, { vouched: true }), guild: body.guild, device: body.device };
-      savePairing(this.pairing);
-      this.pairingError = null;
-      await this.refreshProfile();
-      return { ok: true };
+      if (!res.ok || !body.token || !body.device?.id || !body.guild?.slug) return { ok: false, error: body.error ?? `Pairing failed (${res.status}).` };
+      const pairing: Pairing = {
+        id: body.device.id,
+        guild: { slug: body.guild.slug, name: body.guild.name || body.guild.slug, gameVersion: asGameVersion(body.guild.gameVersion) },
+        siteUrl: trustedSiteOrigin(body.siteUrl, this.trust, { vouched: true }),
+        device: { id: body.device.id, name: body.device.name ?? "" },
+        pairedAt: new Date().toISOString(),
+        lastUsedAt: null,
+        tokenFile: tokenFileFor(body.device.id),
+      };
+      this.tokens.save(pairing.tokenFile, body.token);
+      const added = addPairing(this.pairings, pairing);
+      this.pairings = added.pairings;
+      this.pairingErrors.delete(pairing.id);
+      const replaced = [...this.forget(added.replaced, pairing), ...(await this.refreshProfile(pairing.id))];
+      this.persistPairings();
+      const current = this.pairings.find((p) => p.id === pairing.id) ?? pairing;
+      return {
+        ok: true,
+        guild: { name: current.guild.name, gameVersion: current.guild.gameVersion },
+        replaced: replaced.filter((p) => p.guild.slug !== current.guild.slug).map((p) => ({ name: p.guild.name, gameVersion: p.guild.gameVersion })),
+      };
     } catch (err) {
       return { ok: false, error: `Could not reach ${base}: ${err instanceof Error ? err.message : String(err)}` };
     }
   }
 
-  /** The guild site the device is paired with, for deciding which links may open. */
-  get pairedSite(): string | null {
-    return this.pairing?.siteUrl ?? null;
+  /** Drops replaced pairings' tokens and cached state, unless a pairing still uses the token file. */
+  private forget(replaced: Pairing[], keep?: Pairing): Pairing[] {
+    for (const p of replaced) {
+      if (p.tokenFile !== keep?.tokenFile && !this.pairings.some((q) => q.tokenFile === p.tokenFile)) this.tokens.clear(p.tokenFile);
+      if (p.id !== keep?.id) {
+        this.profiles.delete(p.id);
+        this.pairingErrors.delete(p.id);
+      }
+    }
+    return replaced;
+  }
+
+  /** The guild sites the device is paired with, for deciding which links may open. */
+  get pairedSites(): string[] {
+    return this.usablePairings()
+      .map((p) => p.siteUrl)
+      .filter((s): s is string => Boolean(s));
   }
 
   setUpdate(update: UpdateState) {
@@ -259,37 +339,62 @@ export class Companion {
     this.push();
   }
 
-  unpair() {
-    this.tokens.clear();
-    this.pairing = null;
-    this.profile = null;
-    this.pairingError = null;
-    savePairing(null);
+  /** One guild, or all of them without an id. */
+  unpair(pairingId?: string) {
+    const gone = pairingId ? this.pairings.filter((p) => p.id === pairingId) : this.pairings;
+    this.pairings = this.pairings.filter((p) => !gone.includes(p));
+    this.forget(gone);
+    this.persistPairings();
     this.push();
   }
 
-  private async refreshProfile() {
-    const token = this.tokens.load();
-    if (!token || !this.pairing) return;
+  private async refreshProfiles() {
+    await Promise.all(this.usablePairings().map((p) => this.refreshProfile(p.id)));
+  }
+
+  /**
+   * Loads a pairing's profile from the site: the member's characters and default visibility, the guild's current
+   * name and site, and its game version when the pairing did not carry one (pairings from 0.4.0). Returns any
+   * older pairing the game version made redundant.
+   */
+  private async refreshProfile(id: string): Promise<Pairing[]> {
+    const pairing = this.pairings.find((p) => p.id === id);
+    const token = pairing ? this.tokens.load(pairing.tokenFile) : null;
+    if (!pairing || !token) return [];
+    let replaced: Pairing[] = [];
     try {
       const res = await fetch(`${this.trust.homeUrl}/api/vigil/companion/me`, { headers: { authorization: `Bearer ${token}` } });
       const body = (await res.json().catch(() => ({}))) as Profile & { error?: string };
+      if (!this.pairings.includes(pairing)) return [];
       if (res.ok) {
-        this.profile = body;
+        this.profiles.set(id, body);
         const siteUrl = trustedSiteOrigin(body.siteUrl, this.trust, { vouched: true });
-        if (siteUrl && siteUrl !== this.pairing.siteUrl) {
-          this.pairing = { ...this.pairing, siteUrl };
-          savePairing(this.pairing);
+        let changed = false;
+        if (siteUrl && siteUrl !== pairing.siteUrl) {
+          pairing.siteUrl = siteUrl;
+          changed = true;
         }
-        this.pairingError = null;
+        if (body.guild?.name && body.guild.name !== pairing.guild.name) {
+          pairing.guild.name = body.guild.name;
+          changed = true;
+        }
+        const versioned = setGameVersion(this.pairings, id, asGameVersion(body.guild?.gameVersion));
+        if (versioned.pairings.length !== this.pairings.length || versioned.pairings.some((p, i) => p !== this.pairings[i])) {
+          this.pairings = versioned.pairings;
+          replaced = this.forget(versioned.replaced);
+          changed = true;
+        }
+        if (changed) this.persistPairings();
+        this.pairingErrors.delete(id);
         this.engine?.reconfigure(this.sessionOptions());
       } else {
-        this.pairingError = body.error ?? `The site refused this companion (${res.status}).`;
+        this.pairingErrors.set(id, body.error ?? `The site refused this companion (${res.status}).`);
       }
     } catch {
-      this.pairingError = "The site is unreachable; uploads will wait until it is back.";
+      if (this.pairings.includes(pairing)) this.pairingErrors.set(id, "The site is unreachable; uploads will wait until it is back.");
     }
     this.push();
+    return replaced;
   }
 
   private addonSource() {
@@ -312,15 +417,25 @@ export class Companion {
   }
 
   private pairingState(): PairingState {
-    const paired = Boolean(this.pairing && this.tokens.load());
+    const usable = this.usablePairings();
+    const fallback = defaultPairing(usable);
+    const failing = usable.find((p) => this.pairingErrors.has(p.id));
+    const error = failing ? this.pairingErrors.get(failing.id)! : null;
     return {
-      paired,
-      guild: paired ? (this.profile?.guild ?? this.pairing!.guild) : null,
-      user: this.profile?.user ?? null,
-      device: paired ? this.pairing!.device : null,
-      defaultVisibility: this.profile?.defaultVisibility ?? null,
-      storage: paired ? this.tokens.storage : null,
-      error: this.pairingError,
+      paired: usable.length > 0,
+      pairings: usable.map((p) => ({
+        id: p.id,
+        guild: { ...p.guild },
+        user: this.profiles.get(p.id)?.user ?? null,
+        device: { ...p.device },
+        siteUrl: p.siteUrl,
+        pairedAt: p.pairedAt,
+        lastUsedAt: p.lastUsedAt,
+        error: this.pairingErrors.get(p.id) ?? null,
+      })),
+      defaultVisibility: (fallback && this.profiles.get(fallback.id)?.defaultVisibility) ?? null,
+      storage: usable.length ? this.tokens.storage : null,
+      error: failing && usable.length > 1 ? `${failing.guild.name}: ${error}` : error,
     };
   }
 
@@ -328,7 +443,7 @@ export class Companion {
     const source = this.addonSource();
     return {
       version: app.getVersion(),
-      server: { homeUrl: this.trust.homeUrl, siteUrl: this.pairing?.siteUrl ?? null, dev: this.trust.allowLocal },
+      server: { homeUrl: this.trust.homeUrl, siteUrl: defaultPairing(this.usablePairings())?.siteUrl ?? null, dev: this.trust.allowLocal },
       update: this.update,
       engine: this.snapshot,
       logsDir: this.logsDir,

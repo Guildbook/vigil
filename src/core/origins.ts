@@ -75,13 +75,14 @@ export const RELEASES_URL = "https://github.com/Guildbook/vigil/releases";
 
 /**
  * Whether a link may be opened in the browser: pages on the home domain and its guild subdomains, the paired
- * guild's own site (which may be a custom domain), and the project's GitHub pages.
+ * guilds' own sites (which may be custom domains), and the project's GitHub pages.
  */
-export function canOpenExternally(raw: string, config: TrustConfig, pairedSite: string | null): boolean {
+export function canOpenExternally(raw: string, config: TrustConfig, pairedSites: string | null | readonly (string | null)[]): boolean {
   const url = parse(raw);
   if (!url) return false;
   if (url.protocol === "https:" && url.hostname === "github.com" && url.pathname.startsWith("/Guildbook/")) return true;
   const origin = trustedSiteOrigin(raw, config);
   if (origin) return true;
-  return Boolean(pairedSite && url.origin === pairedSite && trustedSiteOrigin(raw, config, { vouched: true }));
+  const sites: readonly (string | null)[] = typeof pairedSites === "string" || pairedSites === null ? [pairedSites] : pairedSites;
+  return sites.some((site) => site && url.origin === site) && Boolean(trustedSiteOrigin(raw, config, { vouched: true }));
 }

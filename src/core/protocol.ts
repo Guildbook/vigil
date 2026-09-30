@@ -33,6 +33,14 @@ export type UploadState =
   | { state: "skipped"; reason: string }
   | { state: "failed"; error: string; retrying: boolean; /** Sending the same report again cannot help. */ final?: boolean };
 
+/** Where a fight uploads: the guild picked for its log's game, and why when that was a fallback. */
+export interface UploadDestination {
+  pairingId: string;
+  guild: string;
+  gameVersion: LogGameVersion | null;
+  warning: string | null;
+}
+
 export interface FightSummary {
   id: string;
   label: string;
@@ -46,6 +54,7 @@ export interface FightSummary {
   gcdUsage: number;
   callouts: string[];
   upload: UploadState;
+  destination: UploadDestination | null;
   encounterId: number | null;
   /** The group fight (meters, deaths, boss abilities) recorded alongside, when one lines up. */
   groupId: string | null;
@@ -59,15 +68,28 @@ export interface Identity {
   faction: Faction | null;
 }
 
+/** One paired guild, as the window and tray show it. */
+export interface PairedGuild {
+  id: string;
+  /** `gameVersion` comes from the pairing or the site's profile; null until either has said. */
+  guild: { slug: string; name: string; gameVersion: LogGameVersion | null };
+  user: { name: string | null } | null;
+  device: { id: string; name: string };
+  siteUrl: string | null;
+  pairedAt: string;
+  lastUsedAt: string | null;
+  error: string | null;
+}
+
 export interface PairingState {
   paired: boolean;
-  /** `gameVersion` comes from the site's profile, so it is missing until that has loaded. */
-  guild: { slug: string; name: string; gameVersion?: LogGameVersion } | null;
-  user: { name: string | null } | null;
-  device: { id: string; name: string } | null;
+  /** At most one per game version. */
+  pairings: PairedGuild[];
+  /** From the default guild's profile (the most recently used). */
   defaultVisibility: "private" | "officers" | "guild" | null;
-  /** Where the device token lives: the OS keychain via Electron safeStorage, or memory only. */
+  /** Where the device tokens live: the OS keychain via Electron safeStorage, or memory only. */
   storage: "keychain" | "memory" | null;
+  /** The first problem with a paired guild, named when there are several. */
   error: string | null;
 }
 
@@ -92,7 +114,7 @@ export type UpdateState =
 
 export interface AppState {
   version: string;
-  /** Where API calls go, and the paired guild's own site (for links). */
+  /** Where API calls go, and the default paired guild's own site (the one that took the latest upload). */
   server: { homeUrl: string; siteUrl: string | null; dev: boolean };
   update: UpdateState;
   engine: EngineSnapshot | null;
@@ -113,12 +135,21 @@ export interface AppState {
   models: { id: string; label: string }[];
 }
 
+export interface PairResult {
+  ok: boolean;
+  error?: string;
+  guild?: { name: string; gameVersion: LogGameVersion | null };
+  /** Guilds this pairing replaced on this computer (same game version, or the same guild paired again). */
+  replaced?: { name: string; gameVersion: LogGameVersion | null }[];
+}
+
 export interface CompanionBridge {
   getState(): Promise<AppState>;
   onState(cb: (state: AppState) => void): () => void;
   updateSettings(partial: Partial<Settings>): Promise<Settings>;
-  pair(input: { code: string }): Promise<{ ok: boolean; error?: string }>;
-  unpair(): Promise<void>;
+  pair(input: { code: string }): Promise<PairResult>;
+  /** One guild by pairing id, or every guild without one. */
+  unpair(pairingId?: string): Promise<void>;
   openExternal(url: string): Promise<void>;
   pickFolder(): Promise<string | null>;
   installAddon(clientDir: string): Promise<{ ok: boolean; message: string }>;

@@ -603,7 +603,8 @@ input[type="checkbox"] {
 .note.center {
   text-align: center;
 }
-.row.addon {
+.row.addon,
+.row.pairing {
   margin-bottom: 6px;
 }
 .grow {

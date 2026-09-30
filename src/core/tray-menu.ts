@@ -7,12 +7,15 @@ export type TrayTone = "ok" | "paused" | "attention";
 
 export type TrayAction = "open" | "pause" | "resume" | "open-logs" | "open-site" | "check-updates" | "install-update" | "quit";
 
-export type TrayItem = { type: "separator" } | { type: "info"; label: string } | { type: "action"; action: TrayAction; label: string; enabled?: boolean };
+export type TrayItem =
+  | { type: "separator" }
+  | { type: "info"; label: string }
+  | { type: "action"; action: TrayAction; label: string; enabled?: boolean; /** For "open-site": which guild's site. */ url?: string };
 
 export interface TrayStatus {
   /** The combat log: watching, waiting or what is wrong. */
   status: string;
-  /** The paired guild, or that there is none. */
+  /** The paired guilds (named, or counted past two), or that there is none. */
   guild: string;
   /** Uploads in flight, paused, or a problem with the site; null when there is nothing to say. */
   uploads: string | null;
@@ -42,10 +45,17 @@ function logStatus(s: TrayState): { text: string; ok: boolean } {
   return { text: client ? `Watching ${client} log` : "Watching the combat log", ok: true };
 }
 
+function guildLine(s: TrayState): string {
+  const names = s.pairing.paired ? s.pairing.pairings.map((g) => g.guild.name) : [];
+  if (names.length === 0) return "Not paired with a guild";
+  if (names.length > 2) return `Paired with ${names.length} guilds`;
+  return clip(`Paired with ${names.join(" and ")}`);
+}
+
 export function trayStatus(s: TrayState): TrayStatus {
   const log = logStatus(s);
   const p = s.pairing;
-  const guild = p.paired && p.guild ? `Paired with ${p.guild.name}` : "Not paired with a guild";
+  const guild = guildLine(s);
   const pending = s.fights.filter((f) => f.upload.state === "queued" || f.upload.state === "uploading" || (f.upload.state === "failed" && f.upload.retrying)).length;
   let uploads: string | null = null;
   if (p.paired && p.error) uploads = clip(p.error);
@@ -65,9 +75,15 @@ export function trayMenu(s: TrayState): TrayItem[] {
   if (s.pairing.paired) {
     items.push(s.uploadsPaused ? { type: "action", action: "resume", label: "Resume uploads" } : { type: "action", action: "pause", label: "Pause uploads" });
   }
+  items.push({ type: "action", action: "open-logs", label: "Open Logs folder", enabled: Boolean(s.logsDir && s.engine) });
+  const sites = s.pairing.paired ? s.pairing.pairings.filter((g) => g.siteUrl) : [];
+  if (sites.length > 1) {
+    for (const g of sites) items.push({ type: "action", action: "open-site", label: clip(`Open ${g.guild.name} site`), url: g.siteUrl! });
+  } else {
+    const url = sites[0]?.siteUrl ?? (s.pairing.paired ? s.server.siteUrl : null);
+    items.push({ type: "action", action: "open-site", label: "Open guild site", enabled: Boolean(url), ...(url ? { url } : {}) });
+  }
   items.push(
-    { type: "action", action: "open-logs", label: "Open Logs folder", enabled: Boolean(s.logsDir && s.engine) },
-    { type: "action", action: "open-site", label: "Open guild site", enabled: Boolean(s.pairing.paired && s.server.siteUrl) },
     { type: "separator" },
     s.update.state === "ready"
       ? { type: "action", action: "install-update", label: `Restart to update to ${APP_NAME} ${s.update.version}` }

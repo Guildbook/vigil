@@ -10,7 +10,7 @@ const bridge: CompanionBridge = {
   },
   updateSettings: (partial) => ipcRenderer.invoke("settings:update", partial),
   pair: (input) => ipcRenderer.invoke("pair", input),
-  unpair: () => ipcRenderer.invoke("unpair"),
+  unpair: (pairingId) => ipcRenderer.invoke("unpair", pairingId),
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
   pickFolder: () => ipcRenderer.invoke("pick-folder"),
   installAddon: (clientDir) => ipcRenderer.invoke("addon:install", clientDir),

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { EngineSnapshot } from "../src/core/engine";
-import type { AppState, FightSummary, UploadState } from "../src/core/protocol";
+import type { AppState, FightSummary, PairedGuild, UploadState } from "../src/core/protocol";
 import { trayMenu, trayStatus } from "../src/core/tray-menu";
 
 const LOGS = "/Applications/World of Warcraft/_classic_era_/Logs";
@@ -16,12 +16,28 @@ const fight = (id: string, upload: UploadState) => ({ id, upload }) as FightSumm
 
 type State = Parameters<typeof trayStatus>[0];
 
+function guild(slug: string, name: string, gameVersion: PairedGuild["guild"]["gameVersion"], siteUrl: string | null = `https://${slug}.guildbook.io`): PairedGuild {
+  return {
+    id: `dev-${slug}`,
+    guild: { slug, name, gameVersion },
+    user: null,
+    device: { id: `dev-${slug}`, name: "Vigil on test" },
+    siteUrl,
+    pairedAt: "2026-09-01T00:00:00.000Z",
+    lastUsedAt: null,
+    error: null,
+  };
+}
+
+const OSM = guild("osm", "Order of Saint Michael", "forever");
+const MIRKWOOD = guild("mirkwood", "Mirkwood", "anniversary");
+
 function state(overrides: Partial<State> = {}): State {
   return {
     logsDir: LOGS,
     logsOptions: [{ label: "Classic Era (_classic_era_)", logsDir: LOGS, latestLog: "WoWCombatLog.txt", latestAt: 1 }],
     engine: engine(),
-    pairing: { paired: true, guild: { slug: "osm", name: "Order of Saint Michael" }, user: null, device: null, defaultVisibility: null, storage: "keychain", error: null },
+    pairing: { paired: true, pairings: [OSM], defaultVisibility: null, storage: "keychain", error: null },
     fights: [],
     server: { homeUrl: "https://guildbook.io", siteUrl: "https://osm.guildbook.io", dev: false },
     update: { state: "idle" },
@@ -30,7 +46,7 @@ function state(overrides: Partial<State> = {}): State {
   } satisfies Partial<AppState>;
 }
 
-const unpaired = { paired: false, guild: null, user: null, device: null, defaultVisibility: null, storage: null, error: null };
+const unpaired = { paired: false, pairings: [], defaultVisibility: null, storage: null, error: null };
 
 describe("trayStatus", () => {
   it("names the client being watched and the paired guild", () => {
@@ -106,6 +122,25 @@ describe("trayMenu", () => {
     expect(l).not.toContain("Check for updates...");
   });
 
+  it("names both guilds and offers each guild's site when paired with two", () => {
+    const two = state({ pairing: { ...state().pairing, pairings: [OSM, MIRKWOOD] } });
+    expect(trayStatus(two).guild).toBe("Paired with Order of Saint Michael and Mirkwood");
+    const sites = trayMenu(two).filter((i) => i.type === "action" && i.action === "open-site");
+    expect(sites).toEqual([
+      { type: "action", action: "open-site", label: "Open Order of Saint Michael site", url: "https://osm.guildbook.io" },
+      { type: "action", action: "open-site", label: "Open Mirkwood site", url: "https://mirkwood.guildbook.io" },
+    ]);
+  });
+
+  it("counts guilds past two and opens the only site when just one has one", () => {
+    const three = [OSM, MIRKWOOD, guild("era", "Era Folk", "era", null)];
+    const s = state({ pairing: { ...state().pairing, pairings: three } });
+    expect(trayStatus(s).guild).toBe("Paired with 3 guilds");
+    expect(trayMenu(s).filter((i) => i.type === "action" && i.action === "open-site")).toHaveLength(2);
+    const one = state({ pairing: { ...state().pairing, pairings: [OSM, guild("era", "Era Folk", "era", null)] } });
+    expect(trayMenu(one).find((i) => i.type === "action" && i.action === "open-site")).toMatchObject({ label: "Open guild site", url: "https://osm.guildbook.io" });
+  });
+
   it("hides pausing and disables links that have nowhere to go", () => {
     const items = trayMenu(state({ pairing: unpaired, logsDir: null, engine: null }));
     expect(items.some((i) => i.type === "action" && (i.action === "pause" || i.action === "resume"))).toBe(false);
@@ -115,7 +150,12 @@ describe("trayMenu", () => {
   });
 
   it("uses no middots or emoji in any line", () => {
-    const all = [state(), state({ uploadsPaused: true, fights: [fight("a", { state: "queued" })] }), state({ pairing: unpaired, logsDir: null, engine: null })]
+    const all = [
+      state(),
+      state({ uploadsPaused: true, fights: [fight("a", { state: "queued" })] }),
+      state({ pairing: unpaired, logsDir: null, engine: null }),
+      state({ pairing: { ...state().pairing, pairings: [OSM, MIRKWOOD] } }),
+    ]
       .flatMap(labels)
       .join("\n");
     expect(all).not.toMatch(/[\u00b7\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
