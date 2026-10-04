@@ -73,8 +73,8 @@ describe("Vigil addon in a Lua VM", () => {
   it.each(["era", "tbc", "retail", "forever"] as Flavor[])("loads and starts without errors on the %s client", async (flavor) => {
     const a = await load(flavor);
     expect(await a.errors()).toEqual([]);
-    expect(await a.json("H.ns.version")).toBe("0.3.3");
-    expect(await a.json("VigilDB.version")).toBe(2);
+    expect(await a.json("H.ns.version")).toBe("0.3.4");
+    expect(await a.json("VigilDB.version")).toBe(3);
     expect(await a.json("VigilLivePanel ~= nil and VigilMinimapButton ~= nil")).toBe(true);
     expect(await a.json("H.ns.intel.count")).toBeGreaterThan(200);
     // Classic clients: registered, unknown until the first event. 12.x clients: known restricted, never registered.
@@ -87,7 +87,7 @@ describe("Vigil addon in a Lua VM", () => {
     expect(await a.json("VigilPanel:IsShown()")).toBe(true);
     const height = await a.json<number>("VigilPanel:GetHeight()");
     expect(height).toBeGreaterThan(300);
-    expect(await a.json("GameTooltip.lines[1]")).toBe("Vigil | v0.3.3");
+    expect(await a.json("GameTooltip.lines[1]")).toBe("Vigil | v0.3.4");
   });
 
   it.each(["era", "tbc", "retail", "forever"] as Flavor[])("presses, drags and clicks the masked minimap button on the %s client", async (flavor) => {
@@ -122,14 +122,56 @@ describe("Vigil addon in a Lua VM", () => {
     );
     expect(await a.errors()).toEqual([]);
     const db = await a.json<Record<string, Record<string, unknown>>>("VigilDB");
-    expect(db.version).toBe(2);
-    expect(db.settings).toEqual({ autoLog: true, autoLogInstances: false });
+    expect(db.version).toBe(3);
+    expect(db.settings).toEqual({ autoLog: true, autoLogInstances: false, autoAdvanced: true });
     expect(db.minimap).toEqual({ minimapPos: 90, hide: true });
     expect(db.live).toMatchObject({ shown: true, locked: false, scale: 1 });
     expect(db.intel).toMatchObject({ enabled: true, collapsed: false });
     expect(db.callouts).toMatchObject({ enabled: true, idle: true, idleSeconds: 2.5, buffs: true });
     expect((db.snapshots as unknown as { at: number }[])[0]).toMatchObject({ at: 1, name: "Paladin" });
     expect(await a.json("VigilMinimapButton == nil or not VigilMinimapButton:IsShown()")).toBe(true);
+  });
+
+  describe("combat logging defaults", () => {
+    it("turns combat logging and Advanced Combat Logging on at the first login", async () => {
+      const a = await load("tbc", undefined, `H.cvars.advancedCombatLogging = "0"`);
+      expect(await a.errors()).toEqual([]);
+      expect(await a.json("VigilDB.settings")).toEqual({ autoLog: true, autoLogInstances: true, autoAdvanced: true });
+      expect(await a.json("H.logging")).toBe(true);
+      expect(await a.json("H.cvars.advancedCombatLogging")).toBe("1");
+      expect((await a.chat()).some((l) => l.includes("turned on Advanced Combat Logging"))).toBe(true);
+    });
+
+    it("turns 'every login' on once for 0.3.x SavedVariables, then keeps the player's choice", async () => {
+      const a = await load("tbc", `{ version = 2, snapshots = {}, settings = { autoLog = false, autoLogInstances = true } }`);
+      expect(await a.json("VigilDB.settings.autoLog")).toBe(true);
+      expect(await a.json("H.logging")).toBe(true);
+      await a.run(`VigilDB.settings.autoLog = false H.ns.ensureDB()`);
+      expect(await a.json("VigilDB.settings.autoLog")).toBe(false);
+    });
+
+    it("leaves Advanced Combat Logging alone when the player opted out", async () => {
+      const a = await load("tbc", `{ version = 3, settings = { autoLog = true, autoLogInstances = true, autoAdvanced = false } }`, `H.cvars.advancedCombatLogging = "0"`);
+      expect(await a.json("H.cvars.advancedCombatLogging")).toBe("0");
+      await a.run(`SlashCmdList.VIGIL("log on")`);
+      await a.wait(1);
+      expect(await a.json("H.cvars.advancedCombatLogging")).toBe("0");
+      expect((await a.chat()).some((l) => l.includes("turn on Advanced Combat Logging in System > Network"))).toBe(true);
+    });
+
+    it("waits for the end of combat to turn Advanced Combat Logging on", async () => {
+      const a = await load("tbc", undefined, `H.cvars.advancedCombatLogging = "0" H.inCombat = true`);
+      expect(await a.json("H.cvars.advancedCombatLogging")).toBe("0");
+      await a.run(`H.inCombat = false H.fire("PLAYER_REGEN_ENABLED")`);
+      expect(await a.json("H.cvars.advancedCombatLogging")).toBe("1");
+    });
+
+    it("keeps working when the client refuses the CVar", async () => {
+      const a = await load("tbc", undefined, `H.cvars.advancedCombatLogging = "0" H.cvarsLocked = true`);
+      expect(await a.errors()).toEqual([]);
+      expect(await a.json("H.cvars.advancedCombatLogging")).toBe("0");
+      expect(await a.json("H.logging")).toBe(true);
+    });
   });
 
   describe("replaying the TBC Anniversary sample", () => {
@@ -355,7 +397,7 @@ describe("Vigil addon in a Lua VM", () => {
       expect(await a.json("H.isSecret(VigilLivePanel.rows[2].value:GetText())")).toBe(true);
       expect(await panelRows(a)).toEqual(["Time=0:10", "Damage=12.3K", "DPS=1.2K"]);
       expect(await a.json("VigilLivePanel.subtitle:GetText()")).toBe("In combat");
-      expect(await a.json("VigilLivePanel.note:GetText()")).toBe("Numbers from the game's damage meter.");
+      expect(await a.json("VigilLivePanel.note:GetText()")).toBe("");
       await a.run(`VigilMinimapButton.scripts.OnEnter(VigilMinimapButton)`);
       expect((await a.json<string[]>("GameTooltip.lines")).some((l) => /^In combat \| 0:0\d$/.test(l))).toBe(true);
 
@@ -483,7 +525,7 @@ describe("Vigil addon in a Lua VM", () => {
       expect(await a.json("H.ns.fight.available")).toBe(false);
       expect(await a.json("H.events.COMBAT_LOG_EVENT_UNFILTERED[1] == nil")).toBe(true);
       await a.wait(0.3);
-      expect(await a.json("VigilLivePanel.note:GetText()")).toBe("Numbers from the game's damage meter.");
+      expect(await a.json("VigilLivePanel.note:GetText()")).toBe("");
       expect(await a.errors()).toEqual([]);
     });
 

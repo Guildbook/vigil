@@ -16,7 +16,7 @@ World of Warcraft/_classic_era_/Interface/AddOns/Vigil/
 
 1. Turn on **Advanced Combat Logging** once, in System > Network. Only the desktop app uses it (it adds power and position data to the log file); the in-game panels work either way.
 2. Click the Vigil button on the minimap (or type `/vigil`) to open the settings. Right-click the button to turn combat logging on or off. Drag it to move it around the minimap.
-3. By default combat logging turns on when you enter a dungeon or raid and off again when you leave. The settings can instead keep it on at every login. If the client has no `LoggingCombat`, type `/combatlog` instead.
+3. By default combat logging turns on at every login, and Advanced Combat Logging (System > Network) is kept on, after combat if you log in fighting. Either can be switched off in the settings; with 'every login' off, logging turns on when you enter a dungeon or raid and off again when you leave. If the client has no `LoggingCombat`, type `/combatlog` instead.
 4. Play. The live panel follows each fight; snapshots are taken on login, after each fight, and when gear, level or talents change. Uploads happen from the Vigil desktop app.
 
 ### Live panel
@@ -64,7 +64,7 @@ Vigil only shows information. It never casts, targets or clicks for you.
 
 ## SavedVariables
 
-`VigilDB.machineExport` is a JSON string: `{"version":1,"addon":"Vigil","addonVersion":"0.3.3","snapshots":[...]}`. Each snapshot has `at` (Unix seconds), `name`, `realm`, `guid`, `class`, `race`, `level`, `stats`, `gear` and `talents`. The site parses it with `src/lib/vigil/saved-variables.ts`.
+`VigilDB.machineExport` is a JSON string: `{"version":1,"addon":"Vigil","addonVersion":"0.3.4","snapshots":[...]}`. Each snapshot has `at` (Unix seconds), `name`, `realm`, `guid`, `class`, `race`, `level`, `stats`, `gear` and `talents`. The site parses it with `src/lib/vigil/saved-variables.ts`.
 
 `VigilDB` version 2 (0.3.0) adds `live`, `intel` and `callouts` settings and `fights`, the last 5 fight summaries (label, boss, duration, damage, DPS, healing, active and idle time). Version 1 data from 0.2.x is kept as it is.
 
@@ -76,7 +76,7 @@ Vigil only shows information. It never casts, targets or clicks for you.
 
 The 12.x engine (retail Midnight, and the Forever client) keeps combat events from addons and hands out "secret" values: enemy GUIDs and names, your buffs in combat, and the damage meter's numbers in combat. A secret can be shown but not compared, added up or searched.
 
-- **Live panel:** Vigil only registers for combat events when the client offers them (`CombatLogGetCurrentEventInfo` exists and `C_CombatLog.IsCombatLogRestricted()` is false), so it never trips a blocked-action warning. Otherwise, or when a whole combat passes without one, it shows your damage, DPS, healing and HPS for the current session from the game's own damage meter (`C_DamageMeter`), marked "Numbers from the game's damage meter". If the meter is switched off in the game's options, the panel says so. Fight history (`/vigil fights`) and saved fight summaries need combat events, so they stay empty there; the desktop app has the full numbers.
+- **Live panel:** Vigil only registers for combat events when the client offers them (`CombatLogGetCurrentEventInfo` exists and `C_CombatLog.IsCombatLogRestricted()` is false), so it never trips a blocked-action warning. Otherwise, or when a whole combat passes without one, it shows your damage, DPS, healing and HPS for the current session from the game's own damage meter (`C_DamageMeter`). If the meter is switched off in the game's options, the panel says so. Fight history (`/vigil fights`) and saved fight summaries need combat events, so they stay empty there; the desktop app has the full numbers.
 - **Callouts:** the idle warning needs combat events and is off. The dropped-buff warning polls your buffs in combat and goes quiet whenever the game hides them.
 - **Boss intel:** a target is recognised by name when its GUID is secret; when both are secret, the boss comes from `ENCOUNTER_START`, and `/vigil intel <name>` always works.
 

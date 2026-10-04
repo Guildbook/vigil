@@ -35,7 +35,7 @@ The `mac-universal.zip` on the release page is the macOS update feed; most peopl
 ## Getting started
 
 1. **Install Vigil.** On macOS, open the dmg and drag Vigil to Applications. On Windows, run the installer. On Linux, `chmod +x Vigil-*.AppImage` and run it.
-2. **Turn on combat logging in WoW.** Enable **Advanced Combat Logging** once, in System > Network. Then type `/combatlog` in chat each session to start logging. (The Vigil addon, which the app can install for you, turns logging on at every login with `/vigil log on`.)
+2. **Turn on combat logging in WoW.** The Vigil addon, which the app offers to install, does this for you: it turns combat logging on at every login and keeps Advanced Combat Logging on. Without the addon, enable **Advanced Combat Logging** once in System > Network, then type `/combatlog` in chat each session.
 3. **Pair Vigil with your guild.** On your guild's Guildbook site, open **Vigil**, then **Connect Vigil companion**, and create a pairing code. Enter it in Vigil's settings, or click **Open in the companion** to pair in one step.
 
 ## First launch on unsigned builds

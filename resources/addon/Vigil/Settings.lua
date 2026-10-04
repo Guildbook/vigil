@@ -228,6 +228,14 @@ local function createPanel()
         end
       end
     end),
+    check("Keep Advanced Combat Logging on", function()
+      return db().settings.autoAdvanced
+    end, function(on)
+      db().settings.autoAdvanced = on
+      if on then
+        L.ensureAdvanced()
+      end
+    end),
     check("Turn combat logging on in dungeons and raids", function()
       return db().settings.autoLogInstances
     end, function(on)
@@ -366,6 +374,8 @@ function ns.refreshPanel()
   end
   if L.advancedOn() then
     panel.advanced:SetText("Advanced Combat Logging is on.")
+  elseif ns.ensureDB().settings.autoAdvanced and ns.clean(InCombatLockdown) then
+    panel.advanced:SetText("Advanced Combat Logging turns on when you leave combat.")
   else
     panel.advanced:SetText("|cffffb24cFor the Vigil desktop app, turn on Advanced Combat Logging in System > Network.|r")
   end

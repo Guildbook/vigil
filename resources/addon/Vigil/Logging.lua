@@ -119,6 +119,50 @@ L.advancedOn = advancedLoggingOn
 
 L.ADVANCED_HINT = "turn on Advanced Combat Logging in System > Network for rage, mana and position data."
 
+local function setAdvancedCVar()
+  if type(C_CVar) == "table" and type(C_CVar.SetCVar) == "function" then
+    return pcall(C_CVar.SetCVar, "advancedCombatLogging", "1")
+  end
+  if type(SetCVar) == "function" then
+    return pcall(SetCVar, "advancedCombatLogging", "1")
+  end
+  return false
+end
+
+-- Set while 'keep Advanced Combat Logging on' waits for the player to leave combat, where CVars can be locked.
+local advancedAfterCombat = false
+
+--- Turns Advanced Combat Logging on when the 'keep it on' setting allows. True when it is on afterwards, nil
+--- when it will be turned on after combat, false when it stays off (setting off, or the client refused).
+local function ensureAdvanced()
+  if advancedLoggingOn() then
+    advancedAfterCombat = false
+    return true
+  end
+  if not ns.ensureDB().settings.autoAdvanced then
+    return false
+  end
+  if clean(InCombatLockdown) then
+    advancedAfterCombat = true
+    return nil
+  end
+  advancedAfterCombat = false
+  setAdvancedCVar()
+  if advancedLoggingOn() then
+    say("turned on Advanced Combat Logging (System > Network) so the desktop app gets rage, mana and positions.")
+    ns.refreshPanel()
+    return true
+  end
+  return false
+end
+L.ensureAdvanced = ensureAdvanced
+
+function L.onCombatEnd()
+  if advancedAfterCombat then
+    ensureAdvanced()
+  end
+end
+
 local flushLogging
 
 local function scheduleLoggingFlush(delay)
@@ -223,9 +267,10 @@ function L.statusLine()
   end
   local settings = ns.ensureDB().settings
   return string.format(
-    "combat log: %s, advanced logging: %s, every login: %s, dungeons and raids: %s",
+    "combat log: %s, advanced logging: %s (keep on: %s), every login: %s, dungeons and raids: %s",
     loggingState == nil and "unknown" or loggingState and "ON" or "off",
     advancedLoggingOn() and "on" or "OFF (System > Network > Advanced Combat Logging)",
+    settings.autoAdvanced and "on" or "off",
     settings.autoLog and "on" or "off",
     settings.autoLogInstances and "on" or "off"
   )
@@ -307,7 +352,7 @@ local function logForInstance()
   requestLogging(true, function(success)
     if success then
       say("combat logging on for this instance.")
-      if not advancedLoggingOn() then
+      if ensureAdvanced() == false then
         say(L.ADVANCED_HINT)
       end
     else
@@ -363,6 +408,7 @@ function L.onStartup()
     return
   end
   startupDone = true
+  ensureAdvanced()
   if not loggingAvailable() then
     return
   end
@@ -403,7 +449,7 @@ function L.toggle()
     end
     if on then
       say("combat logging on.")
-      if not advancedLoggingOn() then
+      if ensureAdvanced() == false then
         say(L.ADVANCED_HINT)
       end
     elseif ns.ensureDB().settings.autoLog then

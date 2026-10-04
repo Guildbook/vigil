@@ -1,5 +1,5 @@
 local ADDON_NAME, ns = ...
-local ADDON_VERSION = "0.3.3"
+local ADDON_VERSION = "0.3.4"
 ns.version = ADDON_VERSION
 
 local L, S, F, I = ns.logging, ns.snapshots, ns.fight, ns.intel
@@ -129,7 +129,7 @@ SlashCmdList.VIGIL = function(msg)
     L.request(true, function(success)
       if success then
         say("combat logging on. It turns back on at every login until /vigil log off.")
-        if not L.advancedOn() then
+        if L.ensureAdvanced() == false then
           say(L.ADVANCED_HINT)
         end
       end
@@ -206,6 +206,7 @@ ns.on("CVAR_UPDATE", function()
   ns.refreshPanel()
 end)
 ns.on("PLAYER_REGEN_ENABLED", function()
+  L.onCombatEnd()
   S.schedule("combat_end")
   I.scheduleHide()
 end)

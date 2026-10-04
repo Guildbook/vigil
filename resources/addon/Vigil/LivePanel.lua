@@ -24,7 +24,6 @@ local REFRESH = 0.25
 local ROWS = 6
 
 local NO_EVENTS = "This client keeps combat events from addons; damage shows in the desktop app."
-local METER_NOTE = "Numbers from the game's damage meter."
 local METER_OFF = "Turn on the game's damage meter in its options to see your numbers here."
 
 local frame
@@ -194,7 +193,7 @@ local function showMeter(v)
     frame.title:SetText("Vigil")
     frame.subtitle:SetText("Waiting for a fight")
     setPortrait(nil)
-    frame.note:SetText(METER_NOTE)
+    frame.note:SetText(ns.meter.switchedOff() and METER_OFF or "")
     return nil
   end
   frame.title:SetText((boss and boss.n) or (v.open and v.encounter and v.label) or targetName() or "Fight")
@@ -218,11 +217,7 @@ local function showMeter(v)
     setRow("Healing", ns.meter.amountText(m.healing))
     setRow("HPS", ns.meter.rateText(m.hps))
   end
-  if not m.found and ns.meter.switchedOff() then
-    frame.note:SetText(METER_OFF)
-  else
-    frame.note:SetText(METER_NOTE)
-  end
+  frame.note:SetText(not m.found and ns.meter.switchedOff() and METER_OFF or "")
   return v.inCombat and ns.callouts.text(v) or nil
 end
 

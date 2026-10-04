@@ -5,7 +5,8 @@
   for known bosses, and a few quiet callouts. The full analysis and uploads happen in the Vigil desktop app from
   WoWCombatLog.txt, which the client writes to disk in 48 KB batches, so the desktop view of a solo fight can lag
   by minutes. The addon also:
-  - turns combat logging on (LoggingCombat) when you ask it to, on every login, or in dungeons and raids;
+  - turns combat logging on (LoggingCombat) on every login unless you opt out, or in dungeons and raids, and
+    keeps Advanced Combat Logging on (the advancedCombatLogging CVar) unless you opt out;
   - snapshots gear, talents and stats out of combat into SavedVariables (VigilDB.machineExport);
   - shows a minimap button and a settings panel (no libraries).
 
@@ -22,7 +23,7 @@ local ADDON_NAME, ns = ...
 
 ns.name = ADDON_NAME
 -- ns.version is set by Vigil.lua (ADDON_VERSION, kept in step with the TOC); read it at run time, not load time.
-ns.DB_VERSION = 2
+ns.DB_VERSION = 3
 ns.EXPORT_VERSION = 1
 ns.MAX_SNAPSHOTS = 50
 ns.MAX_SAVED_FIGHTS = 5
@@ -270,7 +271,7 @@ local function defaults(target, values)
 end
 
 local DEFAULTS = {
-  settings = { autoLog = false, autoLogInstances = true },
+  settings = { autoLog = true, autoLogInstances = true, autoAdvanced = true },
   minimap = { minimapPos = 220, hide = false },
   live = { shown = true, locked = false, scale = 1, hideOutOfCombat = false },
   intel = { enabled = true, locked = false, scale = 1, collapsed = false },
@@ -281,12 +282,18 @@ local DEFAULTS = {
   VigilDB v1 (0.2.x): version, snapshots, settings { autoLog, autoLogInstances }, minimap, machineExport.
   v2 (0.3.0) keeps all of that and adds live, intel and callouts settings and `fights`, the last few fight
   summaries. Panel positions live in live.point and intel.point once moved.
+  v3 (0.3.4) adds settings.autoAdvanced and makes 'every login' the default. Earlier versions defaulted it off,
+  so nearly everyone has it off without having chosen to; the upgrade turns it on once.
 ]]
 function ns.ensureDB()
   if type(VigilDB) ~= "table" then
     VigilDB = {}
   end
   local db = VigilDB
+  local previous = tonumber(db.version)
+  if previous and previous < 3 and type(db.settings) == "table" then
+    db.settings.autoLog = true
+  end
   if type(db.snapshots) ~= "table" then
     db.snapshots = {}
   end

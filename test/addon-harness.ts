@@ -240,7 +240,13 @@ function UnitChannelInfo() return nil end
 function IsInInstance() return false, "none" end
 function GetInstanceInfo() return "Nagrand" end
 function GetRealZoneText() return "Nagrand" end
-function GetCVar() return "1" end
+H.cvars = {}
+function GetCVar(name) local v = H.cvars[name] if v ~= nil then return v end return "1" end
+function SetCVar(name, value)
+  if H.cvarsLocked then error("SetCVar blocked") end
+  H.cvars[name] = tostring(value)
+  return true
+end
 function GetCursorPosition() return 0, 0 end
 function SetPortraitTexture(tex, unit) tex.portrait = unit; tex.texture = "portrait:" .. unit end
 function LoggingCombat(...)
@@ -380,7 +386,8 @@ const FLAVORS: Record<Flavor, string> = {
     Enum = { DamageMeterSessionType = { Overall = 0, Current = 1, Expired = 2 },
       DamageMeterType = { DamageDone = 0, Dps = 1, HealingDone = 2, Hps = 3 } }
     H.meter = { damage = nil, dps = nil, healing = nil, hps = nil, duration = 0, available = true }
-    function GetCVar(name) if name == "damageMeterEnabled" then return H.meterSwitchedOff and "0" or "1" end return "1" end
+    local baseGetCVar = GetCVar
+    function GetCVar(name) if name == "damageMeterEnabled" then return H.meterSwitchedOff and "0" or "1" end return baseGetCVar(name) end
     local function amount(v) if H.inCombat then return H.secret(v) end return v end
     C_DamageMeter = {
       IsDamageMeterAvailable = function() return H.meter.available, H.meter.available and "" or "Too low level" end,
