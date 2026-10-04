@@ -2,7 +2,7 @@
   "name": "vigil",
   "productName": "Vigil",
   "desktopName": "vigil.desktop",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": true,
   "description": "Vigil: live combat log analysis on a second screen, paired with your guild's Guildbook site",
   "author": "Guildbook",
