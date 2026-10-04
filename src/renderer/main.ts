@@ -2,7 +2,7 @@ import { CLASS_INFO, FACTION_LABELS, type Faction, type WowClass } from "@/lib/g
 import { LOG_VERSION_LABELS, type LogGameVersion } from "@/lib/vigil/game-version";
 import type { Callout, LiveFight } from "@/lib/vigil/live";
 import type { Boss, BossAbility, Instance } from "../data/bosses";
-import { ADDON_ACTION_LABEL, addonStatus } from "../core/addon-status";
+import { ADDON_ACTION_LABEL, addonPrompt, addonStatus } from "../core/addon-status";
 import type { GroupAbilityView, GroupFightView, GroupPlayerView } from "../core/group";
 import { bossByKey, bossesByInstance, instanceById, searchBosses, type InstanceGroup } from "../core/intel";
 import { groupByVersion, pickPairing } from "../core/pairings";
@@ -33,6 +33,7 @@ let pairMessage: { ok: boolean; text: string } | null = null;
 /** The pairing form is open under the paired guilds. */
 let addingGuild = false;
 let addonMessage: { ok: boolean; text: string } | null = null;
+let addonNotice: { ok: boolean; text: string } | null = null;
 
 const esc = (s: unknown) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -200,6 +201,21 @@ function renderUpdate(s: AppState) {
     return `<div class="update">Vigil ${esc(u.version)} is available. <button class="link" data-open="${esc(u.downloadUrl)}">Download</button></div>`;
   }
   return "";
+}
+
+/** On Live: one click installs or updates the in-game addon for the game being followed, or says how it went. */
+function renderAddonPrompt(s: AppState) {
+  if (view !== "live") return "";
+  if (addonNotice) {
+    return `<div class="update addon-prompt ${addonNotice.ok ? "" : "bad"}">${esc(addonNotice.text)} <button class="link" data-act="addon-notice-ok">OK</button></div>`;
+  }
+  const p = addonPrompt(s.addon.targets, s.addon.bundled, s.logsDir, s.settings.addonPromptDismissed);
+  if (!p) return "";
+  const text =
+    p.action === "install"
+      ? `The Vigil addon isn't installed in ${esc(p.label)}. It turns on combat logging for you and saves your gear and talents for your reports.`
+      : `Vigil addon v${esc(p.bundled)} is ready for ${esc(p.label)} (you have v${esc(p.installed)}).`;
+  return `<div class="update addon-prompt">${text} <button class="link" data-addon="${esc(p.clientDir)}">${p.action === "install" ? "Install" : "Update"}</button> <button class="link" data-addon-dismiss="${esc(p.dismissKey)}">Not now</button></div>`;
 }
 
 /** How long the log may sit unchanged before the Current fight panel explains why. */
@@ -792,6 +808,7 @@ function go(next: typeof view) {
   if (next === "settings" && view !== "settings") {
     pairMessage = null;
     addonMessage = null;
+    addonNotice = null;
     addingGuild = false;
   }
   if (next !== "fight") detailId = null;
@@ -821,7 +838,8 @@ function render() {
   const focused = focusKey();
   const body =
     view === "settings" ? renderSettings(state) : view === "intel" ? renderIntel(state) : view === "fight" ? renderFightDetail(state) : renderLive(state);
-  root.innerHTML = renderTopbar(state) + renderUpdate(state) + renderGameMismatch(state) + `<main class="scroll">${body}</main>`;
+  root.innerHTML =
+    renderTopbar(state) + renderUpdate(state) + renderGameMismatch(state) + renderAddonPrompt(state) + `<main class="scroll">${body}</main>`;
   const next = root.querySelector(".scroll");
   if (next) next.scrollTop = scrollTop;
   if (focused) root.querySelector<HTMLElement>(focused)?.focus({ preventScroll: true });
@@ -896,8 +914,13 @@ root.addEventListener("click", async (e) => {
   }
   if (el.dataset.addon) {
     const r = await api.installAddon(el.dataset.addon);
-    addonMessage = { ok: r.ok, text: r.message };
+    if (view === "live") addonNotice = { ok: r.ok, text: r.message };
+    else addonMessage = { ok: r.ok, text: r.message };
     state = await api.getState();
+    return render();
+  }
+  if (el.dataset.addonDismiss) {
+    await update({ addonPromptDismissed: [...state.settings.addonPromptDismissed, el.dataset.addonDismiss] });
     return render();
   }
   switch (el.dataset.act) {
@@ -935,6 +958,9 @@ root.addEventListener("click", async (e) => {
       return;
     case "install-update":
       return void api.installUpdate();
+    case "addon-notice-ok":
+      addonNotice = null;
+      break;
     case "browse": {
       const dir = await api.pickFolder();
       if (dir) await update({ logsDirOverride: dir });

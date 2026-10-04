@@ -24,6 +24,8 @@ export interface Settings {
   keepInTray: boolean;
   /** Launch at login (macOS and Windows only; see AppState.canOpenAtLogin). */
   openAtLogin: boolean;
+  /** "clientDir@version" for each addon install or update prompt the player answered Not now. */
+  addonPromptDismissed: string[];
 }
 
 export type UploadState =

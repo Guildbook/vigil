@@ -36,6 +36,39 @@ export function addonStatus(installed: string | null, bundled: string | null): A
   return { text: `v${installed}, up to date`, action: "reinstall" };
 }
 
+export interface AddonPrompt {
+  label: string;
+  clientDir: string;
+  action: "install" | "update";
+  installed: string | null;
+  bundled: string;
+  /** Stored in Settings.addonPromptDismissed by Not now; a newer bundled addon asks again. */
+  dismissKey: string;
+}
+
+const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+
+/**
+ * The prompt on the Live view for the client whose log Vigil follows (the best-guess client when none is
+ * followed yet), so nobody has to find the addon in Settings. Null when it is installed and current, the build
+ * has no addon, or the player said Not now to this version.
+ */
+export function addonPrompt(
+  targets: { label: string; clientDir: string; installed: string | null }[],
+  bundled: string | null,
+  logsDir: string | null,
+  dismissed: string[],
+): AddonPrompt | null {
+  if (!bundled || !targets.length) return null;
+  const followed = logsDir ? norm(logsDir) : null;
+  const target = (followed && targets.find((t) => followed.startsWith(`${norm(t.clientDir)}/`))) || targets[0]!;
+  const { action } = addonStatus(target.installed, bundled);
+  if (action !== "install" && action !== "update") return null;
+  const dismissKey = `${target.clientDir}@${bundled}`;
+  if (dismissed.includes(dismissKey)) return null;
+  return { label: target.label, clientDir: target.clientDir, action, installed: target.installed, bundled, dismissKey };
+}
+
 export const ADDON_ACTION_LABEL: Record<Exclude<AddonAction, null>, string> = {
   install: "Install",
   update: "Update",

@@ -30,6 +30,7 @@ export const DEFAULT_SETTINGS = (): Settings => ({
   modelId: "auto",
   keepInTray: true,
   openAtLogin: false,
+  addonPromptDismissed: [],
 });
 
 const file = (name: string) => path.join(app.getPath("userData"), name);

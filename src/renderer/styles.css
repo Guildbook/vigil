@@ -211,6 +211,9 @@ button:focus-visible {
   background: rgb(201 164 76 / 0.1);
   border-bottom: 1px solid var(--line);
 }
+.update.bad {
+  background: rgb(168 24 47 / 0.15);
+}
 
 .dot {
   display: inline-block;
